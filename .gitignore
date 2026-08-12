@@ -1,0 +1,19 @@
+# Credentials / secrets
+.env
+*.key
+*.pem
+credentials*
+passwords*
+secrets*
+
+# VirtualBox / VM files
+*.vdi
+*.vmdk
+*.ova
+*.iso
+
+# Logs / temporary
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
