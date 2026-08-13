@@ -1149,3 +1149,63 @@ KALI          ⏳ Pending
 ```
 
 **Next milestone: Deploy Wazuh and begin centralized SIEM ingestion.**
+
+
+### Wazuh SIEM Integration
+
+The lab uses the official Wazuh virtual appliance as the central SIEM platform.
+
+Wazuh was connected to the isolated AD-LAB network using:
+
+- Wazuh Server: `10.10.10.30`
+- DC01: `10.10.10.10`
+- WIN11-CLIENT: `10.10.10.20`
+- Domain: `adlab.test`
+
+Both Windows systems were enrolled as Wazuh agents and verified as Active.
+
+Centralized Windows telemetry collection was configured through Wazuh `agent.conf` for:
+
+- Windows Security Event Log
+- Microsoft-Windows-PowerShell/Operational
+- Microsoft-Windows-Sysmon/Operational
+
+The configuration was validated with `verify-agent-conf`, and both agents were confirmed synchronized with the Wazuh manager.
+
+### Failed Authentication Validation
+
+A controlled failed NTLM authentication was generated from WIN11-CLIENT against DC01.
+
+Windows auditing generated:
+
+- Event ID 4625 — Failed logon
+- Event ID 4776 — Credential validation failure
+
+The failed authentication originated from:
+
+- Source host: `WIN11-CLIENT`
+- Source IP: `10.10.10.20`
+- Target system: `DC01`
+
+Wazuh successfully ingested the events and generated alerts including:
+
+- Rule 60122 — Logon Failure - Unknown user or bad password
+- Rule 60104 — Windows audit failure event
+
+This validated the complete telemetry pipeline:
+
+WIN11-CLIENT → DC01 Security Log → Wazuh Agent → Wazuh Manager → Detection Alert
+
+### Custom Detection Engineering
+
+A custom Wazuh rule was added for potential Kerberoasting activity.
+
+The rule monitors Windows Security Event ID 4769 and identifies Kerberos service ticket requests using RC4 encryption (`0x17`) from non-machine accounts.
+
+MITRE ATT&CK mapping:
+
+- T1558.003 — Steal or Forge Kerberos Tickets: Kerberoasting
+
+The rule is maintained in:
+
+`detections/wazuh/local_rules.xml`

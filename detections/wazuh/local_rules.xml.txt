@@ -1,0 +1,23 @@
+<group name="adlab,windows,kerberos,">
+  <rule id="110100" level="10">
+    <if_sid>60106</if_sid>
+
+    <field name="win.system.eventID">^4769$</field>
+
+    <field name="win.eventdata.ticketEncryptionType">^0x17$</field>
+
+    <field name="win.eventdata.targetUserName" type="pcre2">
+      (?i)^(?!.*\$$).+
+    </field>
+
+    <description>
+      ADLAB: Possible Kerberoasting - RC4 Kerberos service ticket requested by non-machine account $(win.eventdata.targetUserName)
+    </description>
+
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+
+    <group>kerberoasting,credential_access,</group>
+  </rule>
+</group>
