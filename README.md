@@ -1809,3 +1809,294 @@ KALI          ⏳ Pending
 ```
 
 **Day 3 is complete. The next milestone is controlled attack simulation, additional identity detections, background-noise testing, Sigma conversion, and hardening validation.**
+Day 4 — Benign Enterprise Noise Automation
+
+Day 4 introduced automated benign background activity into the Active Directory lab.
+
+The purpose of this phase is to make later detection testing more realistic.
+
+Instead of testing detections in a completely quiet environment, WIN11-CLIENT now generates low-rate normal enterprise-style activity in the background.
+
+This provides a baseline that can later be compared against controlled attack activity.
+
+The workflow for this phase was:
+
+Create Benign Activity Script
+        ↓
+Run Manually
+        ↓
+Validate Activity
+        ↓
+Create Scheduled Task
+        ↓
+Run Automatically
+        ↓
+Validate Successful Execution
+        ↓
+Use as Background Traffic During Detection Testing
+
+Benign Noise Generator
+
+A PowerShell script was created:
+
+automation/benign-noise.ps1
+
+The script is deployed on WIN11-CLIENT as:
+
+C:\ADLab\benign-noise.ps1
+
+The script generates several types of normal domain activity.
+
+DNS Activity
+
+The workstation resolves:
+
+dc01.adlab.test
+
+using:
+
+Resolve-DnsName "dc01.adlab.test"
+
+This produces normal DNS traffic and Sysmon DNS telemetry.
+
+ICMP Connectivity
+
+The workstation performs a basic connectivity test to the Domain Controller:
+
+Test-Connection "dc01.adlab.test" -Count 1
+
+This simulates ordinary network connectivity checks.
+
+SYSVOL Access
+
+The script performs a directory read against:
+
+\\dc01.adlab.test\SYSVOL\adlab.test
+
+SYSVOL is normally accessed by domain-joined Windows systems for Group Policy and other domain resources.
+
+This introduces legitimate SMB activity into the lab.
+
+NETLOGON Access
+
+The script also reads:
+
+\\dc01.adlab.test\NETLOGON
+
+This produces another form of legitimate domain SMB activity that can exist alongside later authentication and lateral-movement tests.
+
+Normal PowerShell Activity
+
+The script records information about the current workstation session:
+
+Domain
+Username
+Computer name
+
+This creates normal PowerShell execution that can later be compared against suspicious PowerShell activity.
+
+Benign Noise Logging
+
+The script writes its own execution log to:
+
+%LOCALAPPDATA%\ADLab\benign-noise.log
+
+The log provides a simple record of what normal activity was generated.
+
+A successful manual cycle produced:
+
+DNS lookup dc01.adlab.test | SUCCESS
+Ping DC01 | True
+SYSVOL read | SUCCESS
+NETLOGON read | SUCCESS
+PowerShell workstation activity | ADLAB\Administrator on WIN11-CLIENT
+Benign noise cycle | COMPLETE
+
+This confirmed that all intended background actions executed correctly.
+
+Scheduled Task Automation
+
+A second script was created:
+
+automation/scheduled-task-setup.ps1
+
+Its purpose is to automatically register the benign activity generator as a Windows Scheduled Task.
+
+The scheduled task is named:
+
+ADLAB-Benign-Enterprise-Noise
+
+The task executes:
+
+C:\ADLab\benign-noise.ps1
+
+using:
+
+powershell.exe
+-NoProfile
+-ExecutionPolicy Bypass
+
+The execution-policy bypass applies only to the PowerShell process started by the task and does not permanently modify the system-wide PowerShell execution policy.
+
+Scheduled Task Frequency
+
+The task was configured to run:
+
+Every 30 minutes
+
+This interval was intentionally kept low.
+
+The goal is not to flood Wazuh with unnecessary events.
+
+Instead, the automation creates a small but continuous amount of predictable legitimate activity while detection testing is performed.
+
+Scheduled Task Validation
+
+The scheduled task was verified using:
+
+Get-ScheduledTask -TaskName "ADLAB-Benign-Enterprise-Noise" |
+Select-Object TaskName,State
+
+The task successfully returned:
+
+TaskName: ADLAB-Benign-Enterprise-Noise
+State: Ready
+
+Evidence
+
+
+
+Automated Execution Validation
+
+The task was then allowed to execute automatically.
+
+Its execution status was checked using:
+
+Get-ScheduledTaskInfo -TaskName "ADLAB-Benign-Enterprise-Noise" |
+Select-Object LastRunTime,NextRunTime,LastTaskResult
+
+The first automated run returned:
+
+LastTaskResult: 0
+
+A result of 0 confirmed successful task execution.
+
+The next execution was automatically scheduled 30 minutes later.
+
+Automated Noise Log
+
+The local activity log was checked again after the scheduled execution.
+
+The second cycle showed:
+
+DNS lookup dc01.adlab.test | SUCCESS
+Ping DC01 | True
+SYSVOL read | SUCCESS
+NETLOGON read | SUCCESS
+PowerShell workstation activity | ADLAB\Administrator on WIN11-CLIENT
+Benign noise cycle | COMPLETE
+
+This confirmed that the scheduled task successfully generated all expected background activity without manual interaction.
+
+Evidence
+
+
+
+Why Background Noise Matters
+
+Detection testing in a completely quiet lab can produce misleading results.
+
+In a quiet environment, almost every security-relevant event appears unusual.
+
+Real enterprise environments contain continuous legitimate activity such as:
+
+DNS queries
+SMB access
+PowerShell usage
+Domain authentication
+SYSVOL access
+NETLOGON access
+Network connectivity checks
+
+The benign-noise generator introduces some of this activity before later attack simulations are performed.
+
+This allows the project to evaluate whether custom detections remain useful when legitimate activity is present.
+
+Detection Engineering Benefits
+
+The background activity will later be used to evaluate:
+
+False positives
+
+Detection specificity
+
+Alert quality
+
+Correlation thresholds
+
+Rule sensitivity
+
+Normal vs suspicious behavior
+
+Detection performance under background activity
+
+For example, later password-spray, Kerberos, PowerShell, remote-logon, and privilege-change tests can be executed while the benign activity generator continues to run.
+
+This provides stronger evidence that the detection rules are identifying the intended behavior rather than simply alerting because the environment is otherwise silent.
+
+Day 4 Files
+
+The following files were added during this phase:
+
+automation/
+├── benign-noise.ps1
+└── scheduled-task-setup.ps1
+
+Evidence:
+
+screenshots/
+├── day4-benign-noise-scheduled-task.png
+└── day4-benign-noise-automated-run.png
+
+Day 4 Result
+
+The benign enterprise noise generator is now:
+
+Created                 ✅
+Manually Tested         ✅
+Logged                  ✅
+Scheduled               ✅
+Automatically Run       ✅
+Validated               ✅
+
+Current behavior:
+
+WIN11-CLIENT
+      │
+      ├── DNS lookup
+      ├── Ping DC01
+      ├── SYSVOL read
+      ├── NETLOGON read
+      └── Normal PowerShell activity
+              │
+              ↓
+      Repeats every 30 minutes
+
+The lab now contains continuous legitimate background activity that can remain active while later attack and detection scenarios are performed.
+
+Day 4 Milestone
+
+Benign Noise Script            ✅ Complete
+Manual Validation              ✅ Complete
+Scheduled Task                 ✅ Complete
+Automated Execution            ✅ Complete
+30-Minute Recurrence           ✅ Active
+Background Detection Baseline  ✅ Established
+
+Next milestone: begin controlled reconnaissance and identity-security testing while benign background traffic remains active.
+
+Project Status Table Update
+
+Update the project-status table near the top of the main README.md to include:
+
+| Day 4 — Benign Noise Automation | ✅ Complete |
