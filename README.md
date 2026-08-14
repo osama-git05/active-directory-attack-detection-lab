@@ -2100,3 +2100,407 @@ Project Status Table Update
 Update the project-status table near the top of the main README.md to include:
 
 | Day 4 — Benign Noise Automation | ✅ Complete |
+
+
+Day 4 — Kali Reconnaissance & Network Service Discovery Detection
+
+After establishing a benign background-traffic baseline, the next phase introduced a dedicated Kali Linux system for controlled reconnaissance against the Active Directory environment.
+
+The purpose of this phase was to validate whether network reconnaissance against the Domain Controller could be:
+
+Observed locally through Sysmon.
+
+Forwarded into Wazuh.
+
+Distinguished from normal background traffic.
+
+Converted into a dedicated correlation-based detection.
+
+Kali Lab Configuration
+
+An existing Kali Linux virtual machine was reused for the project.
+
+The VirtualBox adapter was attached only to:
+
+Internal Network: AD-LAB
+
+The final Kali network configuration was:
+
+Hostname: KALI
+IP Address: 10.10.10.50
+Subnet: 10.10.10.0/24
+DNS Server: 10.10.10.10
+Default Gateway: None
+
+This keeps the controlled testing workstation inside the isolated Active Directory lab.
+
+The resulting architecture is:
+
+AD-LAB — 10.10.10.0/24
+
+DC01           10.10.10.10
+WIN11-CLIENT   10.10.10.20
+WAZUH          10.10.10.30
+KALI           10.10.10.50
+
+Kali Connectivity Validation
+
+The Kali interface was configured with:
+
+eth0 → 10.10.10.50/24
+
+Connectivity to the Domain Controller was tested using:
+
+ping -c 4 10.10.10.10
+
+The test completed with:
+
+0% packet loss
+
+confirming that Kali could communicate with DC01 through the isolated AD-LAB network.
+
+Evidence
+
+
+
+Kali DNS and Routing Validation
+
+DNS resolution was tested using:
+
+getent hosts dc01.adlab.test
+
+The expected result was:
+
+10.10.10.10    dc01.adlab.test
+
+Routing was also inspected using:
+
+ip route
+
+Kali contained the local:
+
+10.10.10.0/24
+
+route without an unnecessary default Internet route.
+
+This confirms the attack workstation is restricted to the controlled lab environment.
+
+Evidence
+
+
+
+Controlled Active Directory Service Reconnaissance
+
+A targeted Nmap TCP connection scan was performed against DC01.
+
+The scan intentionally targeted only common Active Directory and Windows infrastructure ports rather than scanning the entire network.
+
+nmap -Pn -sT -p 53,88,135,139,389,445,464,636,3268,3269 10.10.10.10
+
+The following services were discovered:
+
+53/tcp    open  domain
+88/tcp    open  kerberos-sec
+135/tcp   open  msrpc
+139/tcp   open  netbios-ssn
+389/tcp   open  ldap
+445/tcp   open  microsoft-ds
+464/tcp   open  kpasswd5
+636/tcp   open  ldapssl
+3268/tcp  open  globalcatLDAP
+3269/tcp  open  globalcatLDAPssl
+
+These services are consistent with the Domain Controller role.
+
+Evidence
+
+
+
+Sysmon Reconnaissance Telemetry
+
+DC01 Sysmon telemetry was inspected immediately after the Nmap scan.
+
+The scan generated multiple:
+
+Sysmon Event ID 3 — Network Connection
+
+events.
+
+The source IP was:
+
+10.10.10.50
+
+which directly identified the Kali workstation.
+
+An initial Sysmon event showed traffic between Kali and DC01 and demonstrated that the reconnaissance was visible at the endpoint.
+
+Evidence
+
+
+
+Wazuh Ingestion Validation
+
+The same Sysmon Event ID 3 telemetry was successfully forwarded into Wazuh.
+
+The dashboard was filtered using:
+
+agent.id: 001
+data.win.system.eventID: 3
+
+and later narrowed specifically to:
+
+10.10.10.50
+
+This proved that Kali-generated network activity could be traced through:
+
+Kali
+  ↓
+DC01
+  ↓
+Sysmon Event ID 3
+  ↓
+Wazuh Agent
+  ↓
+Wazuh Manager
+  ↓
+Dashboard
+
+Evidence
+
+
+
+
+
+Built-In Wazuh Rule Quality Finding
+
+During reconnaissance validation, Wazuh built-in rule:
+
+92105
+
+generated alerts with the description:
+
+Possible suspicious access to Windows admin shares
+
+However, one of the events associated with the Kali scan showed:
+
+Source IP:        10.10.10.50
+Destination IP:   10.10.10.10
+Destination Port: 135
+Process:           C:\Windows\System32\svchost.exe
+Initiated:         false
+
+Port 135/TCP is associated with the Windows RPC Endpoint Mapper and is not itself an SMB administrative-share connection.
+
+This showed that the built-in alert provided visibility, but its description did not accurately represent the complete reconnaissance behavior.
+
+Rather than treating rule 92105 as a reliable port-scan detection, it was documented as a detection-quality / semantic-tuning finding.
+
+This demonstrates an important detection-engineering principle:
+
+An alert firing does not automatically mean
+the alert correctly describes the observed activity.
+
+Multi-Port Reconnaissance Analysis
+
+Sysmon Event ID 3 telemetry was extracted from DC01 and filtered for:
+
+Source IP: 10.10.10.50
+
+The resulting events showed that Kali contacted ten different destination ports within the same second:
+
+53
+88
+135
+139
+389
+445
+464
+636
+3268
+3269
+
+Example observations included:
+
+10.10.10.50 → 10.10.10.10:636
+10.10.10.50 → 10.10.10.10:3269
+10.10.10.50 → 10.10.10.10:88
+10.10.10.50 → 10.10.10.10:389
+10.10.10.50 → 10.10.10.10:464
+10.10.10.50 → 10.10.10.10:3268
+10.10.10.50 → 10.10.10.10:139
+10.10.10.50 → 10.10.10.10:135
+10.10.10.50 → 10.10.10.10:445
+10.10.10.50 → 10.10.10.10:53
+
+This provided a much stronger behavioral signal than any individual connection.
+
+Evidence
+
+
+
+Detection 4 — Network Service Discovery
+
+A custom Wazuh correlation detection was developed to identify rapid multi-port network reconnaissance.
+
+MITRE ATT&CK mapping:
+
+T1046 — Network Service Discovery
+
+The detection uses Sysmon Event ID 3 network telemetry.
+
+Helper Rule 110129
+
+Because the built-in Sysmon Event ID 3 rule is not suitable directly for the required correlation behavior, a custom helper rule was created.
+
+Rule ID: 110129
+Purpose: Track inbound Sysmon Event ID 3 connections
+
+The rule selects:
+
+Sysmon Event ID 3
++
+Initiated = false
+
+and marks the events as candidates for network-scan correlation.
+
+The helper rule uses:
+
+no_log
+
+so individual candidate events do not unnecessarily clutter the alert stream.
+
+Correlation Rule 110130
+
+The final reconnaissance rule is:
+
+Rule ID: 110130
+Level: 10
+MITRE: T1046
+
+Detection logic:
+
+Inbound Sysmon Event ID 3
+        +
+Same source IP
+        +
+Same destination IP
+        +
+Different destination ports
+        +
+5 events within 10 seconds
+        ↓
+Possible Network Service Discovery
+
+This allows the detection to recognize scanning behavior rather than alerting on every individual connection.
+
+The final rule is maintained in:
+
+detections/wazuh/local_rules.xml
+
+Detection Validation
+
+The original targeted Nmap scan was executed again from Kali:
+
+nmap -Pn -sT -p 53,88,135,139,389,445,464,636,3268,3269 10.10.10.10
+
+The custom Wazuh rule successfully fired.
+
+Observed alert data included:
+
+Rule ID:         110130
+Source IP:       10.10.10.50
+Destination IP:  10.10.10.10
+MITRE Technique: T1046
+
+This confirmed the complete detection path:
+
+Kali Nmap Scan
+        ↓
+10 Different AD / Windows Ports
+        ↓
+DC01 Sysmon Event ID 3
+        ↓
+Wazuh Ingestion
+        ↓
+Rule 110129 Helper Correlation
+        ↓
+Rule 110130
+        ↓
+T1046 — Network Service Discovery
+        ↓
+Dashboard Alert
+
+Evidence
+
+
+
+False-Positive Validation
+
+The new reconnaissance detection was tested while the Day 4 benign-noise automation continued running on:
+
+WIN11-CLIENT — 10.10.10.20
+
+The benign generator continuously produces:
+
+DNS resolution
+ICMP connectivity checks
+SYSVOL reads
+NETLOGON reads
+Normal PowerShell activity
+
+All alerts generated by rule 110130 were grouped by source and destination IP.
+
+Observed result:
+
+1  10.10.10.50 → 10.10.10.10
+
+No 110130 alerts were observed from:
+
+10.10.10.20
+
+during this validation period.
+
+This means the rule successfully detected the controlled Kali scan while remaining quiet during the automated benign workstation traffic.
+
+The current validation result is therefore:
+
+Attack Detection:     ✅ Successful
+Benign Noise Alert:   ❌ None observed
+False Positive Check: ✅ Passed during test window
+
+If captured:
+
+
+
+Detection Engineering Result
+
+Detection:      Network Service Discovery
+Rule:           110130
+Helper Rule:    110129
+Telemetry:      Sysmon Event ID 3
+Source:         10.10.10.50 — Kali
+Target:         10.10.10.10 — DC01
+Threshold:      5 events
+Timeframe:      10 seconds
+Correlation:    Same source + same destination + different ports
+MITRE ATT&CK:   T1046
+Alert Result:   ✅ Detected
+Benign FP Test: ✅ No false positive observed
+
+Day 4 Reconnaissance Milestone
+
+Kali AD-LAB Networking              ✅ Complete
+Kali → DC01 Connectivity            ✅ Complete
+DNS Resolution                      ✅ Complete
+Isolated Routing                    ✅ Complete
+Targeted AD Service Recon           ✅ Complete
+Sysmon Event 3 Visibility           ✅ Complete
+Wazuh Event Ingestion               ✅ Complete
+Built-In Alert Quality Analysis     ✅ Complete
+Custom Correlation Rule 110129      ✅ Complete
+Network Scan Rule 110130            ✅ Complete
+MITRE T1046 Mapping                 ✅ Complete
+Live Dashboard Detection            ✅ Complete
+Benign Noise False-Positive Check   ✅ Passed
+
+Network Service Discovery detection is now validated end-to-end.

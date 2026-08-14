@@ -60,3 +60,48 @@
   </rule>
 
 </group>
+<group name="adlab,windows,sysmon,reconnaissance,">
+
+  <!--
+    Helper rule:
+    Track inbound Sysmon Event ID 3 network connections.
+    Level 1 is required so the event can be used for correlation.
+    no_log prevents these individual helper events from cluttering alerts.
+  -->
+  <rule id="110129" level="1">
+    <if_group>sysmon_event3</if_group>
+
+    <field name="win.system.eventID">^3$</field>
+    <field name="win.eventdata.initiated">^false$</field>
+
+    <description>ADLAB: Sysmon inbound connection candidate for network scan correlation</description>
+
+    <options>no_log</options>
+
+    <group>network_scan_candidate,</group>
+  </rule>
+
+
+  <!--
+    Correlation rule:
+    Same source scans the same destination across multiple different ports.
+  -->
+  <rule id="110130" level="10" frequency="5" timeframe="10">
+
+    <if_matched_sid>110129</if_matched_sid>
+
+    <same_field>win.eventdata.sourceIp</same_field>
+    <same_field>win.eventdata.destinationIp</same_field>
+    <different_field>win.eventdata.destinationPort</different_field>
+
+    <description>ADLAB: Possible network service scanning from $(win.eventdata.sourceIp) against $(win.eventdata.destinationIp)</description>
+
+    <mitre>
+      <id>T1046</id>
+    </mitre>
+
+    <group>network_service_discovery,reconnaissance,discovery,</group>
+
+  </rule>
+
+</group>
