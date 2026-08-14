@@ -1,0 +1,62 @@
+<group name="adlab,windows,kerberos,">
+
+  <rule id="110100" level="10">
+
+    <if_group>authentication_success</if_group>
+
+    <field name="win.system.eventID">^4769$</field>
+
+    <field name="win.eventdata.ticketEncryptionType">^0x17$</field>
+
+    <field name="win.eventdata.targetUserName"
+           type="pcre2">^[^$]+$</field>
+
+    <description>ADLAB: Possible Kerberoasting - RC4 Kerberos service ticket requested by non-machine account $(win.eventdata.targetUserName)</description>
+
+    <mitre>
+      <id>T1558.003</id>
+    </mitre>
+
+    <group>kerberoasting,credential_access,</group>
+
+  </rule>
+
+</group>
+<group name="adlab,windows,authentication,">
+
+  <rule id="110110" level="12" frequency="4" timeframe="120">
+    <if_matched_sid>60122</if_matched_sid>
+
+    <same_field>win.eventdata.ipAddress</same_field>
+    <different_field>win.eventdata.targetUserName</different_field>
+
+    <description>ADLAB: Possible password spraying - multiple user accounts failed authentication from the same source IP</description>
+
+    <mitre>
+      <id>T1110.003</id>
+    </mitre>
+
+    <group>password_spray,authentication_failed,credential_access,</group>
+  </rule>
+
+</group>
+<group name="adlab,powershell,windows,">
+
+  <rule id="110120" level="10">
+
+    <if_sid>91802</if_sid>
+
+    <field name="win.eventdata.scriptBlockText"
+           type="pcre2">(?i)(Invoke-Expression|\bIEX\b|DownloadString|Net\.WebClient|FromBase64String)</field>
+
+    <description>ADLAB: Suspicious PowerShell script block execution detected</description>
+
+    <mitre>
+      <id>T1059.001</id>
+    </mitre>
+
+    <group>powershell,suspicious_script,execution,</group>
+
+  </rule>
+
+</group>
