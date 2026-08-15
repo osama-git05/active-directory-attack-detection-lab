@@ -2,7 +2,7 @@
 
 > An isolated Active Directory detection-engineering lab built with Windows Server 2022, Windows 11, Kali Linux, Sysmon, PowerShell logging, Wazuh SIEM, and Sigma. The project demonstrates the complete defensive workflow from telemetry generation and collection through custom detection engineering, threat hunting, false-positive validation, hardening, and post-remediation retesting.
 
-![Architecture](diagrams/architecture.png)
+![Architecture](diagrams/architecture-detailed.png)
 
 ---
 
