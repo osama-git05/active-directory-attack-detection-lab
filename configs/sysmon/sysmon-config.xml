@@ -1,0 +1,30 @@
+<Sysmon schemaversion="4.90">
+  <!--
+    AD-LAB Sysmon Configuration
+    Purpose:
+      - Process creation telemetry (Event ID 1)
+      - Network connection telemetry (Event ID 3)
+      - File creation telemetry (Event ID 11)
+      - DNS query telemetry (Event ID 22)
+
+    This configuration is intentionally broad for an isolated detection-engineering lab.
+  -->
+
+  <HashAlgorithms>sha256,imphash</HashAlgorithms>
+
+  <EventFiltering>
+
+    <!-- Event ID 1: Process creation -->
+    <ProcessCreate onmatch="exclude" />
+
+    <!-- Event ID 3: Network connections -->
+    <NetworkConnect onmatch="exclude" />
+
+    <!-- Event ID 11: File creation -->
+    <FileCreate onmatch="exclude" />
+
+    <!-- Event ID 22: DNS queries -->
+    <DnsQuery onmatch="exclude" />
+
+  </EventFiltering>
+</Sysmon>

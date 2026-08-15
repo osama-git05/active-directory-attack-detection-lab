@@ -1,0 +1,28 @@
+title: ADLAB PowerShell Active Directory Reconnaissance
+id: 5b21c53a-6db1-4bf9-95fa-74b92bcdd102
+status: experimental
+description: Detects PowerShell Active Directory discovery commands used during the controlled AD-LAB reconnaissance scenario.
+
+logsource:
+  product: windows
+  service: powershell
+
+detection:
+  selection:
+    ScriptBlockText|contains:
+      - 'Get-ADDomain'
+      - 'Get-ADUser'
+      - 'Get-ADGroup'
+      - 'Get-ADGroupMember'
+
+  condition: selection
+
+falsepositives:
+  - Legitimate Active Directory administration or inventory scripts
+
+level: medium
+
+tags:
+  - attack.discovery
+  - attack.t1087.002
+  - attack.t1069.002
