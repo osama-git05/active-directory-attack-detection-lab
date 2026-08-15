@@ -1,1500 +1,128 @@
 # Active Directory Attack & Detection Lab
 
-A hands-on **Active Directory Detection Engineering lab** built in Oracle VirtualBox using Windows Server 2022, Windows 11, Sysmon, Wazuh SIEM, PowerShell, Group Policy, and controlled attack simulation.
+> **Detection Engineering Portfolio Project**
+> Windows Server 2022 • Active Directory • Windows 11 • Kali Linux • Sysmon • Wazuh SIEM • Sigma • PowerShell
 
-The project follows a defensive workflow:
+## Overview
 
-**Build → Generate Activity → Collect Telemetry → Detect → Investigate → Tune → Harden → Document**
+This project builds an isolated Active Directory environment in VirtualBox and uses controlled attack simulations to generate real Windows security telemetry.
 
-The goal is not simply to execute attacks. The lab is designed to show how identity, Kerberos, authentication, PowerShell, and endpoint activity appear in Windows logs; how those events are ingested into a SIEM; how detections are engineered and validated; and how the final results are documented as detection-as-code.
+The focus of the project is **detection engineering**, not simply offensive testing.
 
----
+The workflow used throughout the lab was:
 
-## Project Status
+**Generate → Observe → Ingest → Detect → Investigate → Tune → Harden → Retest**
 
-**Current Stage: Day 3 complete — telemetry, Wazuh ingestion, and initial detection engineering validated**
+The environment was used to simulate and investigate:
 
-| Phase | Status |
-|---|---|
-| Day 1 — Domain Controller | ✅ Complete |
-| Day 2 — AD Identities & Domain Workstation | ✅ Complete |
-| Day 3 — Windows Auditing | ✅ Complete |
-| Day 3 — PowerShell Logging | ✅ Complete |
-| Day 3 — Sysmon | ✅ Complete |
-| Day 3 — Wazuh Deployment | ✅ Complete |
-| Day 3 — Wazuh Agent Enrollment | ✅ Complete |
-| Day 3 — Kerberoasting Detection | ✅ Complete |
-| Day 3 — Password Spray Detection | ✅ Complete |
-| Day 3 — Encoded PowerShell Validation | ✅ Complete |
-| Day 3 — Suspicious PowerShell 4104 Detection | ✅ Complete |
-| Day 3 — Wazuh Cleanup / Config Synchronization | ✅ Complete |
-| Benign Noise Automation | ⏳ Pending |
-| Recon & Authentication Testing | ⏳ Pending |
-| Remote Logon / Lateral-Movement-Like Testing | ⏳ Pending |
-| Privileged Group Change Detection | ⏳ Pending |
-| Canary Account Detection | ⏳ Pending |
-| Sigma Rule Conversion | ⏳ Pending |
-| Hardening & Final Validation | ⏳ Pending |
+* Network and Active Directory reconnaissance
+* Password spraying / failed authentication
+* Kerberoasting
+* Suspicious PowerShell reconnaissance
+* Remote administrative logons
+* Privileged-group membership changes
+* Canary-account authentication
+* Active Directory object auditing
+* LDAP diagnostic telemetry
+* Benign enterprise-like background traffic
+
+Custom Wazuh detections, Sigma rules, hunting views, false-positive testing, hardening, and post-hardening validation were added to turn the lab into a detection-engineering portfolio project.
 
 ---
 
-# Lab Architecture
+# Authorization and Scope
 
-The environment is hosted locally in **Oracle VirtualBox**.
+All activity in this repository was performed against systems deliberately created inside a private VirtualBox lab.
+
+**Lab network:**
 
 ```text
-Windows Host
-│
-└── VirtualBox
-    │
-    ├── Internal Network: AD-LAB (10.10.10.0/24)
-    │   │
-    │   ├── DC01
-    │   │   ├── Windows Server 2022
-    │   │   ├── Active Directory Domain Services
-    │   │   ├── DNS
-    │   │   ├── Group Policy
-    │   │   ├── Advanced Windows Auditing
-    │   │   ├── PowerShell Logging
-    │   │   ├── Sysmon
-    │   │   └── Wazuh Agent
-    │   │
-    │   ├── WIN11-CLIENT
-    │   │   ├── Windows 11 Pro
-    │   │   ├── Domain Workstation
-    │   │   ├── Workstation Logging GPO
-    │   │   ├── Sysmon
-    │   │   └── Wazuh Agent
-    │   │
-    │   ├── WAZUH
-    │   │   ├── Official Wazuh Virtual Appliance
-    │   │   ├── Wazuh Manager
-    │   │   ├── Wazuh Indexer
-    │   │   └── Wazuh Dashboard
-    │   │
-    │   └── KALI
-    │       └── Planned controlled testing workstation
-    │
-    ├── Host-Only Network
-    │   └── Wazuh management / SSH / dashboard access
-    │
-    └── Bridged Adapter
-        └── Wazuh Internet access only
+AD-LAB
+10.10.10.0/24
 ```
 
-The attack and identity-testing environment remains isolated on `AD-LAB`.
+No production systems, real organizations, public systems, or real credentials were targeted.
 
-The Wazuh server uses additional management connectivity so the dashboard and SSH can be accessed from the host and so the appliance can reach the Internet without exposing the AD test systems.
+This project intentionally excludes destructive or high-risk techniques such as:
+
+* Credential dumping from LSASS
+* DCSync
+* Golden Ticket
+* Silver Ticket
+* Ransomware
+* Destructive payloads
+* Persistence or evasion against real systems
 
 ---
 
-# Network Plan
+# Architecture
 
-| Host | Role | IP Address | Status |
-|---|---|---:|---|
-| `DC01` | Domain Controller + DNS | `10.10.10.10` | ✅ Active |
-| `WIN11-CLIENT` | Domain Workstation | `10.10.10.20` | ✅ Active |
-| `WAZUH` | Wazuh Manager / SIEM | `10.10.10.30` | ✅ Active |
-| `KALI` | Controlled Testing Host | `10.10.10.50` | ⏳ Pending |
+![Active Directory Attack and Detection Lab Architecture](diagrams/architecture.png)
 
-### VirtualBox Internal Network
+## Systems
 
-```text
-Network Name: AD-LAB
-Type: Internal Network
-Subnet: 10.10.10.0/24
-```
+| System       | Role                                          | IP Address    |
+| ------------ | --------------------------------------------- | ------------- |
+| DC01         | Windows Server 2022 / Domain Controller / DNS | `10.10.10.10` |
+| WIN11-CLIENT | Windows 11 domain workstation                 | `10.10.10.20` |
+| WAZUH        | Wazuh Manager / SIEM                          | `10.10.10.30` |
+| KALI         | Controlled testing workstation                | `10.10.10.50` |
 
-No default gateway is configured on the AD-LAB interfaces of DC01 or WIN11-CLIENT.
-
----
-
-# Day 1 — Domain Controller Deployment
-
-## Windows Server
-
-A Windows Server 2022 virtual machine was created with:
+## Active Directory
 
 ```text
-Hostname: DC01
-RAM: 4 GB
-vCPU: 2
-Operating System: Windows Server 2022 Desktop Experience
-```
-
-The **Desktop Experience** edition was selected so Server Manager, Active Directory Users and Computers, DNS Manager, Group Policy Management, and Event Viewer could be used directly during the lab.
-
----
-
-## Static Network Configuration
-
-The AD-LAB interface on DC01 was configured with:
-
-```text
-IP Address: 10.10.10.10
-Subnet Mask: 255.255.255.0
-Default Gateway: None
-DNS Server: 10.10.10.10
-```
-
-Validation:
-
-```powershell
-hostname
-ipconfig
-```
-
-### Evidence
-
-![DC01 VirtualBox Network](screenshots/day1-virtualbox-ad-lab-network.png)
-
-![DC01 IP and Hostname](screenshots/day1-dc01-ip-hostname.png)
-
----
-
-# Active Directory Domain Services
-
-The following roles were installed:
-
-- Active Directory Domain Services
-- DNS Server
-
-DC01 was promoted to a Domain Controller and a new forest was created:
-
-```text
-DNS Domain: adlab.test
-NetBIOS Domain: ADLAB
+Domain: adlab.test
+NetBIOS: ADLAB
 Domain Controller: DC01
 ```
 
-Validation:
+---
 
-```powershell
-whoami
-Get-ADDomain
-```
+# Project Status
 
-Expected domain context:
-
-```text
-ADLAB\Administrator
-adlab.test
-```
-
-### Evidence
-
-![Active Directory Domain Controller](screenshots/day1-domain-controller.png)
+| Component                       | Status                                            |
+| ------------------------------- | ------------------------------------------------- |
+| Active Directory domain         | ✅ Complete                                        |
+| Windows 11 domain join          | ✅ Complete                                        |
+| Advanced Windows auditing       | ✅ Complete                                        |
+| Sysmon deployment               | ✅ Complete                                        |
+| PowerShell Script Block Logging | ✅ Complete                                        |
+| Wazuh Windows agents            | ✅ Complete                                        |
+| Network reconnaissance test     | ✅ Complete                                        |
+| Password-spray test             | ✅ Complete                                        |
+| Kerberoasting test              | ✅ Complete                                        |
+| PowerShell reconnaissance test  | ✅ Complete                                        |
+| Remote logon test               | ✅ Complete                                        |
+| Privileged-group change test    | ✅ Complete                                        |
+| Canary account tripwire         | ✅ Complete                                        |
+| Event ID 4662 targeted auditing | ✅ Complete                                        |
+| LDAP Event ID 1644              | 🟡 Local telemetry validated; Wazuh ingestion gap |
+| Custom Wazuh detections         | ✅ Complete                                        |
+| Sigma detection-as-code         | ✅ Complete                                        |
+| Wazuh hunting views             | ✅ Complete                                        |
+| Benign-noise automation         | ✅ Complete                                        |
+| False-positive validation       | ✅ Complete                                        |
+| Detection validation matrix     | ✅ Complete                                        |
+| Hardening                       | ✅ Complete                                        |
+| Post-hardening retest           | ✅ Complete                                        |
 
 ---
 
-# Day 2 — Active Directory Structure
-
-The lab uses dedicated Organizational Units:
-
-```text
-adlab.test
-│
-├── Lab Users
-├── Service Accounts
-├── Workstations
-├── Servers
-└── Groups
-```
-
-The default `Users` container was left unchanged.
-
-Using dedicated OUs makes it possible to apply workstation-specific and Domain Controller-specific Group Policy cleanly.
-
-### Evidence
-
-![Active Directory OU Structure](screenshots/day2-ou-structure.png)
-
----
-
-# Lab Identities
-
-| Account | Purpose | Enabled |
-|---|---|---|
-| `alice.user` | Normal domain user | ✅ |
-| `bob.user` | Secondary domain user | ✅ |
-| `helpdesk.test` | Helpdesk / privilege testing | ✅ |
-| `svc_web` | Kerberos service account | ✅ |
-| `canary.admin` | High-signal authentication tripwire | ❌ Disabled |
-
-Passwords are **lab-only** and are not stored in this repository.
-
----
-
-# Automated AD Account Provisioning
-
-A sanitized provisioning script is stored at:
-
-```text
-automation/create-lab-users.ps1
-```
-
-Passwords are requested interactively with:
-
-```powershell
-Read-Host -AsSecureString
-```
-
-The automation provisions lab identities and configures the Kerberos service account without hardcoding passwords into source control.
-
----
-
-# Kerberos Service Account
-
-Service account:
-
-```text
-svc_web
-```
-
-Registered SPN:
-
-```text
-HTTP/web.adlab.test
-```
-
-Configuration:
-
-```cmd
-setspn -S HTTP/web.adlab.test ADLAB\svc_web
-```
-
-Validation:
-
-```cmd
-setspn -L ADLAB\svc_web
-```
-
-### Evidence
-
-![svc_web SPN](screenshots/day2-svc-web-spn.png)
-
----
-
-# Canary Identity
-
-The account:
-
-```text
-canary.admin
-```
-
-is deliberately:
-
-- Disabled
-- Non-privileged
-- Not used for routine administration
-- Reserved for future high-signal detection testing
-
-Any authentication attempt involving this identity will later be treated as suspicious by design.
-
----
-
-# Windows 11 Domain Workstation
-
-```text
-Hostname: WIN11-CLIENT
-IP Address: 10.10.10.20
-Subnet Mask: 255.255.255.0
-DNS Server: 10.10.10.10
-```
-
-Connectivity validation:
-
-```cmd
-ping 10.10.10.10
-nslookup dc01.adlab.test
-```
-
----
-
-# DNS Cleanup
-
-During the initial build, DC01 temporarily used an additional VirtualBox network adapter and registered unwanted addresses in DNS.
-
-The unwanted records included:
-
-```text
-10.0.2.15
-```
-
-and a temporary IPv6 address.
-
-The incorrect records were removed so:
-
-```text
-dc01.adlab.test
-```
-
-resolves only to:
-
-```text
-10.10.10.10
-```
-
-Validation:
-
-```powershell
-Resolve-DnsName dc01.adlab.test
-```
-
----
-
-# Domain Join
-
-`WIN11-CLIENT` was successfully joined to:
-
-```text
-adlab.test
-```
-
-### Evidence
-
-![WIN11 Domain Join](screenshots/day2-domain-join.png)
-
----
-
-# Domain User Authentication
-
-A domain login was validated using:
-
-```text
-ADLAB\alice.user
-```
-
-Commands:
-
-```cmd
-whoami
-hostname
-echo %LOGONSERVER%
-```
-
-Observed:
-
-```text
-adlab\alice.user
-WIN11-CLIENT
-\\DC01
-```
-
-### Evidence
-
-![Domain User Login](screenshots/day2-domain-user-login.png)
-
----
-
-# Workstation OU
-
-The WIN11 computer object was moved into:
-
-```text
-OU=Workstations
-```
-
-This later allowed a dedicated workstation logging GPO to be applied.
-
-### Evidence
-
-![Workstation OU](screenshots/day2-workstation-ou.png)
-
----
-
-# Day 3 — Advanced Windows Auditing
-
-A dedicated Group Policy Object was created:
-
-```text
-ADLAB-DC-Auditing
-```
-
-It is linked to the Domain Controllers OU.
-
-## Account Logon Auditing
-
-Success and Failure auditing were enabled for:
-
-- Credential Validation
-- Kerberos Authentication Service
-- Kerberos Service Ticket Operations
-
-Relevant Event IDs:
-
-```text
-4768 — Kerberos TGT requested
-4769 — Kerberos service ticket requested
-4771 — Kerberos pre-authentication failure
-4776 — Credential validation
-```
-
-## Logon / Logoff Auditing
-
-```text
-Audit Logon → Success + Failure
-Audit Special Logon → Success
-```
-
-Relevant events:
-
-```text
-4624 — Successful logon
-4625 — Failed logon
-4672 — Special privileges assigned
-```
-
-## Account Management Auditing
-
-Success and Failure auditing were enabled for:
-
-- User Account Management
-- Security Group Management
-
-Relevant events:
-
-```text
-4720 — User account created
-4728 — Member added to security-enabled global group
-4732 — Member added to security-enabled local group
-4756 — Member added to security-enabled universal group
-```
-
-## Process Creation Auditing
-
-Process Creation auditing was enabled with command-line inclusion.
-
-Relevant event:
-
-```text
-4688 — New process created
-```
-
-Policy refresh:
-
-```powershell
-gpupdate /force
-```
-
-### Evidence
-
-![Audit Policy Part 1](screenshots/day3-audit-policy-1.png)
-
-![Audit Policy Part 2](screenshots/day3-audit-policy-2.png)
-
-![DC01 Applied GPO Result](screenshots/day3-dc01-gpo-result.png)
-
-Configuration documentation:
-
-```text
-configs/windows-auditing/advanced-audit-policy.md
-```
-
----
-
-# PowerShell Logging
-
-PowerShell logging was initially enabled for DC01 through the DC auditing GPO.
-
-Enabled settings include:
-
-- Script Block Logging
-- Module Logging
-- Process command-line visibility
-
-Module logging was configured using:
-
-```text
-*
-```
-
-Initial DC01 validation produced:
-
-```text
-Event ID 4104 — PowerShell Script Block Logging
-```
-
-### Evidence
-
-![PowerShell Test Command](screenshots/day3-powershell-test-command.png)
-
-![PowerShell Event 4104](screenshots/day3-powershell-4104-event.png)
-
-Documentation:
-
-```text
-configs/windows-auditing/powershell-logging.md
-```
-
----
-
-# Workstation PowerShell Logging
-
-During Wazuh validation, WIN11-CLIENT initially produced no Event ID 4104 records.
-
-Investigation showed that the original:
-
-```text
-ADLAB-DC-Auditing
-```
-
-GPO was linked only to the Domain Controllers OU.
-
-A second GPO was therefore created:
-
-```text
-ADLAB-Workstation-Logging
-```
-
-and linked to:
-
-```text
-OU=Workstations
-```
-
-The following setting was enabled:
-
-```text
-Computer Configuration
-→ Policies
-→ Administrative Templates
-→ Windows Components
-→ Windows PowerShell
-→ Turn on PowerShell Script Block Logging
-```
-
-The effective setting was verified on WIN11 through:
-
-```powershell
-Get-ItemProperty "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
-```
-
-Result:
-
-```text
-EnableScriptBlockLogging : 1
-```
-
-`gpresult` confirmed the workstation GPO was applied.
-
-### Evidence
-
-![WIN11 Workstation Logging GPO](screenshots/day3-win11-workstation-logging-gpo.png)
-
-![WIN11 PowerShell Event 4104](screenshots/day3-win11-powershell-4104.png)
-
----
-
-# Sysmon Deployment
-
-Microsoft Sysinternals Sysmon was installed on:
-
-```text
-DC01
-WIN11-CLIENT
-```
-
-Important Sysmon Event IDs used by this project:
-
-| Event ID | Description |
-|---:|---|
-| 1 | Process Creation |
-| 3 | Network Connection |
-| 11 | File Creation |
-| 22 | DNS Query |
-
----
-
-# Sysmon Configuration
-
-Version-controlled configuration:
-
-```text
-configs/sysmon/sysmon-config.xml
-```
-
-Current minimal lab configuration:
-
-```xml
-<Sysmon schemaversion="4.90">
-  <HashAlgorithms>sha256</HashAlgorithms>
-  <EventFiltering>
-    <ProcessCreate onmatch="exclude" />
-    <NetworkConnect onmatch="exclude" />
-    <FileCreate onmatch="exclude" />
-    <DnsQuery onmatch="exclude" />
-  </EventFiltering>
-</Sysmon>
-```
-
-This configuration deliberately collects broadly because the environment is small and controlled.
-
-A production implementation would require significantly more exclusion logic and tuning.
-
----
-
-# WIN11 Sysmon Validation
-
-Service operation was confirmed.
-
-### Evidence
-
-![WIN11 Sysmon Running](screenshots/day3-sysmon-win11-running.png)
-
-A controlled process generated:
-
-```text
-Event ID 1 — Process Create
-```
-
-### Evidence
-
-![WIN11 Sysmon Event 1](screenshots/day3-sysmon-win11-event1.png)
-
-DNS activity generated with:
-
-```powershell
-Resolve-DnsName dc01.adlab.test
-```
-
-produced:
-
-```text
-Event ID 22 — DNS Query
-```
-
-### Evidence
-
-![WIN11 Sysmon DNS Event 22](screenshots/day3-sysmon-win11-dns-event22.png)
-
----
-
-# DC01 Sysmon Validation
-
-Sysmon was also deployed to DC01 and validated with controlled process creation.
-
-### Evidence
-
-![DC01 Sysmon Event 1](screenshots/day3-sysmon-dc01-event1.png)
-
-![DC01 Sysmon Config Validation](screenshots/day3-sysmon-dc01-config-validation.png)
-
----
-
-# Wazuh SIEM Deployment
-
-The initial plan was to install Wazuh manually on Ubuntu Server.
-
-During the manual build, the manager, indexer, and Filebeat portions progressed, but repeated package / I/O problems occurred while installing the Wazuh Dashboard package.
-
-Rather than keep an unstable SIEM build, the manual installation was abandoned and replaced with the **official Wazuh virtual appliance**.
-
-The final implementation uses:
-
-```text
-Official Wazuh OVA
-Wazuh 4.14.7
-AD-LAB IP: 10.10.10.30
-```
-
-The appliance runs Wazuh Manager, Indexer, and Dashboard as the central SIEM platform.
-
-The failed manual-install screenshots are intentionally not used as final architecture evidence.
-
----
-
-# Wazuh Network Configuration
-
-The final Wazuh appliance uses three network roles:
-
-```text
-AD-LAB / Internal Network
-    → 10.10.10.30
-    → Agent communication with DC01 and WIN11
-
-Host-Only
-    → Host management access
-    → SSH
-    → Wazuh Dashboard
-
-Bridged
-    → Internet access for the Wazuh appliance
-```
-
-The AD-LAB interface was configured with:
-
-```text
-IP: 10.10.10.30/24
-DNS: 10.10.10.10
-DNS search route: adlab.test
-```
-
-A resolver issue was also corrected so Wazuh could resolve:
-
-```text
-dc01.adlab.test → 10.10.10.10
-```
-
-Connectivity between the SIEM and DC01 was validated before deploying agents.
-
----
-
-# Wazuh Agent Deployment
-
-Wazuh Windows agents were installed on both monitored Windows systems.
-
-## DC01
-
-```text
-Agent ID: 001
-Name: DC01
-IP: 10.10.10.10
-Status: Active
-```
-
-### Evidence
-
-![Wazuh DC01 Agent Deployment](screenshots/day3-wazuh-dc01-agent-deployment.png)
-
-![Wazuh DC01 Agent Running](screenshots/day3-wazuh-dc01-agent-running.png)
-
-![Wazuh DC01 Agent Active](screenshots/day3-wazuh-dc01-agent-active.png)
-
-## WIN11-CLIENT
-
-```text
-Agent ID: 002
-Name: WIN11-CLIENT
-IP: 10.10.10.20
-Status: Active
-```
-
-### Evidence
-
-![Initial Wazuh Agent Status](screenshots/day3-wazuh-agents-status.png)
-
-![All Wazuh Agents Active](screenshots/day3-wazuh-all-agents-active.png)
-
-## Dashboard
-
-### Evidence
-
-![Wazuh Dashboard](screenshots/day3-wazuh-dashboard.png)
-
----
-
-# Centralized Wazuh Windows Telemetry
-
-The final centralized configuration is stored in:
-
-```text
-configs/wazuh/agent.conf
-```
-
-The custom channels are:
-
-```xml
-<agent_config os="Windows">
-
-  <localfile>
-    <location>Microsoft-Windows-PowerShell/Operational</location>
-    <log_format>eventchannel</log_format>
-  </localfile>
-
-  <localfile>
-    <location>Microsoft-Windows-Sysmon/Operational</location>
-    <log_format>eventchannel</log_format>
-  </localfile>
-
-</agent_config>
-```
-
-The standard Windows Security channel is already monitored by the default Wazuh Windows configuration, so it was removed from the centralized custom configuration after a duplicate-source warning was discovered.
-
-Configuration validation:
-
-```bash
-sudo /var/ossec/bin/verify-agent-conf
-```
-
-Agent synchronization was checked individually for:
-
-```text
-001 — DC01
-002 — WIN11-CLIENT
-```
-
----
-
-# Failed Authentication Validation
-
-A controlled failed NTLM authentication was generated from WIN11-CLIENT against DC01.
-
-Windows generated:
-
-```text
-4625 — Failed logon
-4776 — Credential validation failure
-```
-
-Source:
-
-```text
-WIN11-CLIENT
-10.10.10.20
-```
-
-Target:
-
-```text
-DC01
-10.10.10.10
-```
-
-Wazuh generated built-in alerts including:
-
-```text
-60122 — Logon Failure - Unknown user or bad password
-60104 — Windows audit failure event
-```
-
-This validated:
-
-```text
-WIN11-CLIENT
-      ↓
-DC01 Security Log
-      ↓
-Wazuh Agent
-      ↓
-Wazuh Manager
-      ↓
-Detection Alert
-```
-
-### Evidence
-
-![Wazuh Failed Logon Detection](screenshots/day3-wazuh-failed-logon-detection.png)
-
----
-
-# Detection Engineering
-
-The Day 3 detection-engineering phase produced three custom Wazuh detections plus one validated built-in PowerShell detection.
-
-Final custom rules are stored in:
-
-```text
-detections/wazuh/local_rules.xml
-```
-
----
-
-# Detection 1 — Kerberoasting
-
-## Detection Goal
-
-Identify suspicious Kerberos service-ticket requests using RC4 encryption for a non-machine account.
-
-## Test
-
-The lab SPN:
-
-```text
-HTTP/web.adlab.test
-```
-
-is registered to:
-
-```text
-svc_web
-```
-
-A controlled Kerberos service-ticket request was generated from WIN11-CLIENT.
-
-Commands included:
-
-```cmd
-klist purge
-klist get HTTP/web.adlab.test
-klist
-```
-
-DC01 produced:
-
-```text
-Event ID: 4769
-Service Name: svc_web
-Ticket Encryption Type: 0x17
-Client Address: 10.10.10.20
-```
-
-### Evidence
-
-![Kerberos Service Ticket](screenshots/day3-kerberos-service-ticket.png)
-
-![Kerberoasting Event 4769 RC4](screenshots/day3-kerberoasting-event4769-rc4.png)
-
----
-
-## Wazuh Rule 110100
-
-The final rule detects:
-
-- Event ID `4769`
-- RC4 ticket encryption `0x17`
-- Non-machine requesting account
-- Kerberos authentication success context
-
-MITRE ATT&CK:
-
-```text
-T1558.003 — Kerberoasting
-```
-
-The machine-account exclusion prevents usernames containing `$` from matching.
-
-### Validation Evidence
-
-![Kerberoasting Rule Logtest](screenshots/day3-wazuh-kerberoasting-rule-logtest.png)
-
-![Kerberoasting Live Detection](screenshots/day3-wazuh-kerberoasting-live-detection.png)
-
-![Kerberoasting Dashboard Alert](screenshots/day3-wazuh-kerberoasting-dashboard-alert.png)
-
----
-
-# Detection 2 — Password Spraying
-
-## Detection Goal
-
-Detect authentication failures against multiple different accounts from the same source IP within a short time window.
-
-Controlled failed authentications were generated from:
-
-```text
-WIN11-CLIENT — 10.10.10.20
-```
-
-against multiple lab accounts.
-
-The test intentionally used the same incorrect password across different usernames to simulate password-spray behavior without targeting any external system.
-
-## Wazuh Rule 110110
-
-Correlation logic:
-
-```text
-Multiple authentication failures
-+ Same source IP
-+ Different target usernames
-+ Four events
-+ 120-second window
-```
-
-MITRE ATT&CK:
-
-```text
-T1110.003 — Password Spraying
-```
-
-The final live rule successfully correlated the failed authentications and produced a level 12 alert.
-
-### Evidence
-
-![Password Spray Dashboard Alert](screenshots/day3-wazuh-password-spray-dashboard-alert.png)
-
----
-
-# Built-In Detection — Encoded PowerShell
-
-A harmless Base64-encoded PowerShell command was used to test existing Wazuh coverage.
-
-The command executed only:
-
-```text
-ADLAB-ENCODED-TEST
-```
-
-Sysmon Event ID 1 captured the encoded PowerShell process.
-
-Wazuh built-in rule:
-
-```text
-92057
-```
-
-generated a:
-
-```text
-Level 12
-```
-
-alert for PowerShell spawning another PowerShell process with a Base64-encoded command.
-
-MITRE ATT&CK:
-
-```text
-T1059.001 — PowerShell
-```
-
-Because the existing Wazuh detection already provided useful coverage, a duplicate custom rule was not created.
-
-### Evidence
-
-![Encoded PowerShell Test Command](screenshots/day3-encoded-powershell-test-command.png)
-
-![Encoded PowerShell Dashboard Alert](screenshots/day3-wazuh-encoded-powershell-dashboard-alert.png)
-
----
-
-# Detection 3 — Suspicious PowerShell Script Block
-
-## Detection Goal
-
-Detect suspicious PowerShell content from Event ID 4104 using the actual script block text rather than only process creation.
-
-## Wazuh Rule 110120
-
-The final custom rule uses:
-
-```text
-Event channel: Microsoft-Windows-PowerShell/Operational
-Event ID: 4104
-Decoded field: win.eventdata.scriptBlockText
-Parent Wazuh PowerShell rule: 91802
-```
-
-The suspicious-pattern logic includes:
-
-```text
-Invoke-Expression
-IEX
-DownloadString
-Net.WebClient
-FromBase64String
-```
-
-MITRE ATT&CK:
-
-```text
-T1059.001 — PowerShell
-```
-
----
-
-## Safe Validation Test
-
-A harmless `.ps1` file containing:
-
-```powershell
-Invoke-Expression 'Write-Output "ADLAB-RULE-110120-TEST"'
-```
-
-was used.
-
-The system execution policy initially prevented the script from running.
-
-Instead of changing the machine-wide policy, the test was executed in a single PowerShell process using:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File $path
-```
-
-This generated Event ID 4104 containing the expected script text.
-
-Wazuh received the event and custom rule `110120` fired successfully.
-
-### Evidence
-
-![WIN11 PowerShell 4104](screenshots/day3-win11-powershell-4104.png)
-
-![Suspicious PowerShell Dashboard Alert](screenshots/day3-wazuh-suspicious-powershell-dashboard-alert.png)
-
----
-
-# Wazuh / PowerShell Troubleshooting Investigation
-
-The PowerShell 4104 detection required a deeper troubleshooting process and became an important part of the project.
-
-## Problem 1 — No 4104 on WIN11
-
-Initial query:
-
-```powershell
-Get-WinEvent -FilterHashtable @{
-    LogName='Microsoft-Windows-PowerShell/Operational'
-    Id=4104
-}
-```
-
-returned no events.
-
-### Root Cause
-
-The PowerShell logging GPO existed only on the Domain Controllers OU.
-
-### Resolution
-
-Created:
-
-```text
-ADLAB-Workstation-Logging
-```
-
-linked to:
-
-```text
-OU=Workstations
-```
-
-The registry confirmed:
-
-```text
-EnableScriptBlockLogging : 1
-```
-
-and WIN11 began generating 4104 events.
-
----
-
-## Problem 2 — No 4104 in alerts.json
-
-WIN11 generated 4104 locally, but the event did not appear in:
-
-```text
-/var/ossec/logs/alerts/alerts.json
-```
-
-### Investigation
-
-This did not necessarily indicate collection failure because `alerts.json` only contains events that generated alerts.
-
-Raw archive logging was temporarily enabled:
-
-```xml
-<logall_json>yes</logall_json>
-```
-
-to inspect all received events.
-
-Archive logging was later disabled again after troubleshooting:
-
-```xml
-<logall_json>no</logall_json>
-```
-
-to prevent unnecessary disk usage.
-
----
-
-## Problem 3 — Historical Agent Connection Errors
-
-The WIN11 Wazuh agent log showed historical errors such as:
-
-```text
-Unable to connect to 10.10.10.30:1514/tcp
-Lost connection with manager
-Process locked due to agent is offline
-```
-
-The manager was checked with:
-
-```bash
-sudo systemctl is-active wazuh-manager
-sudo ss -lntp | grep 1514
-```
-
-and was confirmed:
-
-```text
-active
-TCP 1514 listening
-```
-
-Agent `002` was also confirmed Active.
-
-Current Sysmon forwarding proved the live network path was functioning.
-
----
-
-## Problem 4 — PowerShell Events Seemed Missing from Archives
-
-A direct `jq` search initially showed no 4104 events.
-
-Further analysis used:
-
-```text
-wazuh-logcollector.state
-```
-
-on WIN11.
-
-The state file proved Wazuh was collecting:
-
-```text
-Microsoft-Windows-PowerShell/Operational
-events: 62
-drops: 0
-```
-
-while simultaneously collecting Sysmon and Security events.
-
-This demonstrated that the endpoint collector was functioning correctly.
-
----
-
-## Problem 5 — JSON Parsing Errors
-
-Because:
-
-```text
-archives.json
-```
-
-was being actively written while `jq` was reading it, normal parsing occasionally returned:
-
-```text
-jq: parse error: Unfinished string at EOF
-```
-
-The investigation switched to line-by-line parsing:
-
-```text
-jq -R
-fromjson?
-```
-
-which safely ignored temporarily incomplete lines.
-
-This revealed the actual PowerShell Operational events.
-
-A count of received event IDs showed:
-
-```text
-40961
-40962
-4100
-4104
-53504
-```
-
-including:
-
-```text
-32 Event ID 4104 records
-```
-
----
-
-## Problem 6 — Determining the Correct Wazuh Field
-
-A full raw Event 4104 was extracted.
-
-Wazuh decoded the actual script content into:
-
-```text
-win.eventdata.scriptBlockText
-```
-
-Example:
-
-```text
-scriptBlockText: "$global:?"
-```
-
-This eliminated guesswork and allowed the final custom rule to use the real decoded field.
-
----
-
-## Problem 7 — First Suspicious PowerShell Test Did Not Trigger
-
-An early `Invoke-Expression` test failed to produce the expected new 4104 record.
-
-The issue was not the Wazuh detection rule; the intended script text had not been generated in the local 4104 event.
-
-A real `.ps1` test file was then used.
-
-Execution was initially blocked by PowerShell execution policy.
-
-A process-scoped bypass was used only for the controlled lab test.
-
-The resulting 4104 events contained:
-
-```text
-Invoke-Expression 'Write-Output "ADLAB-RULE-110120-TEST"'
-```
-
-The event arrived in Wazuh and rule `110120` fired.
-
----
-
-## Problem 8 — Duplicate Security Log Collection
-
-After centralized `agent.conf` was deployed, the agent log reported:
-
-```text
-WARNING: Log file 'Security' is duplicated.
-```
-
-The cause was that Windows Security was already collected by the default Wazuh Windows agent configuration while it was also defined in the custom centralized configuration.
-
-The duplicate custom `Security` block was removed.
-
-The final agent startup showed clean collection of:
-
-```text
-Microsoft-Windows-PowerShell/Operational
-Microsoft-Windows-Sysmon/Operational
-```
-
-without a new duplicate Security warning.
-
----
-
-## Problem 9 — Temporary Debug Logging
-
-Temporary Windows-agent debug logging was enabled during troubleshooting.
-
-After the problem was resolved, the debug override was removed and the Wazuh service was restarted.
-
-This ensures the final configuration does not generate unnecessary verbose logs.
-
----
-
-# Final Day 3 Detection Summary
-
-| Rule | Detection | Source | Level | MITRE | Status |
-|---|---|---|---:|---|---|
-| `110100` | RC4 Kerberos service ticket / Kerberoasting | Windows 4769 | 10 | `T1558.003` | ✅ Validated |
-| `110110` | Password spray correlation | Windows authentication failures | 12 | `T1110.003` | ✅ Validated |
-| `110120` | Suspicious PowerShell script block | PowerShell 4104 | 10 | `T1059.001` | ✅ Validated |
-| `92057` | Encoded PowerShell | Sysmon / PowerShell process | 12 | `T1059.001` | ✅ Built-in validated |
-| `60122` | Failed logon | Windows 4625 | 5 | Authentication | ✅ Built-in validated |
-| `60104` | Windows audit failure | Windows 4776 | 5 | Authentication | ✅ Built-in validated |
-
----
-
-# Current Telemetry Coverage
-
-## Windows Security
-
-```text
-4624 — Successful logon
-4625 — Failed logon
-4672 — Special privileges assigned
-4688 — Process creation
-4728 — Global security group membership change
-4732 — Local security group membership change
-4756 — Universal security group membership change
-4768 — Kerberos TGT request
-4769 — Kerberos service ticket request
-4771 — Kerberos pre-authentication failure
-4776 — Credential validation
-```
-
-## PowerShell
-
-```text
-4104 — Script Block Logging
-```
-
-## Sysmon
-
-```text
-1  — Process Creation
-3  — Network Connection
-11 — File Creation
-22 — DNS Query
-```
-
----
-
-# Evidence Index
-
-## Day 1
-
-```text
-screenshots/day1-virtualbox-ad-lab-network.png
-screenshots/day1-dc01-ip-hostname.png
-screenshots/day1-domain-controller.png
-```
-
-## Day 2
-
-```text
-screenshots/day2-ou-structure.png
-screenshots/day2-svc-web-spn.png
-screenshots/day2-domain-join.png
-screenshots/day2-domain-user-login.png
-screenshots/day2-workstation-ou.png
-```
-
-## Day 3 — Auditing / PowerShell / Sysmon
-
-```text
-screenshots/day3-audit-policy-1.png
-screenshots/day3-audit-policy-2.png
-screenshots/day3-dc01-gpo-result.png
-screenshots/day3-powershell-test-command.png
-screenshots/day3-powershell-4104-event.png
-screenshots/day3-win11-workstation-logging-gpo.png
-screenshots/day3-win11-powershell-4104.png
-screenshots/day3-sysmon-win11-running.png
-screenshots/day3-sysmon-win11-event1.png
-screenshots/day3-sysmon-win11-dns-event22.png
-screenshots/day3-sysmon-dc01-event1.png
-screenshots/day3-sysmon-dc01-config-validation.png
-```
-
-## Day 3 — Wazuh
-
-```text
-screenshots/day3-wazuh-dashboard.png
-screenshots/day3-wazuh-dc01-agent-deployment.png
-screenshots/day3-wazuh-dc01-agent-running.png
-screenshots/day3-wazuh-dc01-agent-active.png
-screenshots/day3-wazuh-agents-status.png
-screenshots/day3-wazuh-all-agents-active.png
-screenshots/day3-wazuh-failed-logon-detection.png
-```
-
-## Day 3 — Detection Engineering
-
-```text
-screenshots/day3-kerberos-service-ticket.png
-screenshots/day3-kerberoasting-event4769-rc4.png
-screenshots/day3-wazuh-kerberoasting-rule-logtest.png
-screenshots/day3-wazuh-kerberoasting-live-detection.png
-screenshots/day3-wazuh-kerberoasting-dashboard-alert.png
-screenshots/day3-wazuh-password-spray-dashboard-alert.png
-screenshots/day3-encoded-powershell-test-command.png
-screenshots/day3-wazuh-encoded-powershell-dashboard-alert.png
-screenshots/day3-wazuh-suspicious-powershell-dashboard-alert.png
-```
-
-Two screenshots from the abandoned manual Wazuh installation are intentionally excluded from final evidence:
-
-```text
-day3-wazuh-adlab-connectivity.png
-day3-wazuh-networking.png
-```
-
-They do not represent the final architecture.
-
----
-
-# Current Repository Structure
+# Repository Structure
 
 ```text
 active-directory-attack-detection-lab/
 │
 ├── README.md
+├── .gitignore
+│
+├── diagrams/
+│   ├── architecture.png
+│   └── architecture-detailed.png
 │
 ├── automation/
-│   └── create-lab-users.ps1
+│   ├── benign-noise.ps1
+│   └── scheduled-task-setup.ps1
 │
 ├── configs/
 │   ├── sysmon/
@@ -1502,1005 +130,841 @@ active-directory-attack-detection-lab/
 │   │
 │   ├── windows-auditing/
 │   │   ├── advanced-audit-policy.md
-│   │   └── powershell-logging.md
+│   │   ├── directory-service-sacl.md
+│   │   ├── powershell-logging.md
+│   │   └── ldap-1644.md
 │   │
 │   └── wazuh/
-│       └── agent.conf
+│       └── agent-log-channels.md
 │
 ├── detections/
 │   ├── wazuh/
 │   │   └── local_rules.xml
 │   │
 │   └── sigma/
+│       ├── kerberoasting.yml
+│       ├── powershell-ad-recon.yml
+│       └── privileged-group-change.yml
 │
 ├── dashboards/
-├── diagrams/
-├── screenshots/
+│   └── wazuh-saved-searches.md
+│
 ├── reports/
+│   ├── test-01-reconnaissance.md
+│   ├── test-02-password-spray.md
+│   ├── test-03-kerberoasting.md
+│   ├── test-04-powershell.md
+│   ├── test-05-lateral-movement.md
+│   ├── test-06-privilege-change.md
+│   ├── detection-validation-matrix.md
+│   ├── noise-baseline.md
+│   └── final-summary.md
+│
+├── screenshots/
+│   └── project evidence
+│
 └── docs/
+    └── final-project-report.pdf
 ```
-
-The old incorrectly named:
-
-```text
-agent.conf.txt
-local_rules.xml.txt
-```
-
-files were replaced by their proper configuration file extensions.
 
 ---
 
-# Security and Authorization
+# Telemetry Sources
 
-All activity is performed exclusively inside the isolated:
+The lab combines native Windows logging with additional endpoint telemetry.
+
+## Windows Security
+
+Important events investigated include:
+
+| Event ID    | Purpose                                  |
+| ----------- | ---------------------------------------- |
+| 4624        | Successful logon                         |
+| 4625        | Failed logon                             |
+| 4648        | Explicit credential use                  |
+| 4662        | Audited Active Directory object access   |
+| 4672        | Special privileges assigned              |
+| 4688        | Process creation                         |
+| 4728        | Member added to global security group    |
+| 4732        | Member added to local security group     |
+| 4756        | Member added to universal security group |
+| 4768        | Kerberos TGT request                     |
+| 4769        | Kerberos service-ticket request          |
+| 4771        | Kerberos pre-authentication failure      |
+| 4776        | Credential validation                    |
+| 5136        | Directory service object modification    |
+| 5140 / 5145 | SMB/share activity                       |
+
+## PowerShell
 
 ```text
-AD-LAB
+Event ID 4104
 ```
 
-VirtualBox environment using systems and accounts deliberately created for this project.
+PowerShell Script Block Logging provides visibility into executed PowerShell content.
 
-The lab does **not** target:
+## Sysmon
 
-- External companies
-- University infrastructure
-- Public services
-- Home-network devices outside the lab
-- Any system without explicit authorization
+Important Sysmon telemetry includes:
 
-No real credentials are used.
+```text
+1  - Process Create
+3  - Network Connection
+11 - File Create
+22 - DNS Query
+```
 
-The repository does not intentionally contain:
+## Directory Service
 
-- Real passwords
-- DSRM passwords
-- Domain Administrator passwords
-- API keys
-- Tokens
-- Private keys
-- Enrollment secrets
-- VM disk images
-- ISO files
-- Personal documents
+```text
+4662 - Audited AD object access
+1644 - LDAP diagnostic query telemetry
+```
 
 ---
 
-# Additional Troubleshooting & Lessons Learned
+# Detection Scenarios
 
-## Windows Server Edition
+## Test 01 — Network / AD Reconnaissance
 
-The first Windows Server installation used Server Core.
+Controlled reconnaissance was performed from Kali against the isolated AD-LAB network.
 
-The VM was rebuilt using:
+Example:
 
-```text
-Windows Server 2022
-Desktop Experience
+```bash
+nmap -sV -Pn 10.10.10.10
 ```
 
-to support the management tooling needed for the project.
+The activity was used to identify exposed services on DC01 and validate network-service discovery detection.
 
-## Windows 11 Installation / Networking
+### Result
 
-WIN11 initially encountered installation and network-driver / OOBE issues.
+**✅ Detected**
 
-The final system was configured as Windows 11 Pro and joined successfully to the AD domain.
-
-## Active Directory DNS Registration
-
-Temporary VirtualBox network interfaces caused DC01 to register unwanted DNS addresses.
-
-Those records were removed so clients resolve the Domain Controller only through the isolated lab network.
-
-## Standard vs Administrative Accounts
-
-Normal user accounts remain standard users.
-
-Privileged configuration is performed only when required, while attack/detection validation uses normal lab identities wherever possible.
-
-## Sysmon Configuration Filename
-
-Windows initially saved:
+Custom Wazuh correlation:
 
 ```text
-sysmon-config.xml
+Rule 110130
 ```
 
-as:
+The detection was also tested while benign enterprise-like background traffic was running.
 
-```text
-sysmon-config.xml.txt
-```
-
-The issue was corrected before the configuration was applied.
-
-## Manual Wazuh Installation Failure
-
-A manual Ubuntu Wazuh installation was attempted first.
-
-Repeated dashboard-package / storage-I/O problems made the build unreliable.
-
-The project switched to the official Wazuh OVA rather than documenting an unstable platform as the final SIEM architecture.
-
-This was treated as an infrastructure troubleshooting decision rather than hidden as a failure.
-
-## VirtualBox Networking
-
-Wazuh required a more flexible network layout than the Windows attack-lab machines.
-
-The final appliance uses:
-
-- Internal `AD-LAB` for SIEM-to-agent communication
-- Host-only for management
-- Bridged connectivity for appliance Internet access
-
-The Windows lab endpoints remain isolated from the external network.
+No observed false-positive match from the normal WIN11-CLIENT background activity occurred during the validation window.
 
 ---
 
-# Detection Validation Philosophy
+# Test 02 — Password Spraying / Failed Authentication
 
-A Windows event appearing in Event Viewer is not considered a completed detection.
+A small number of controlled failed login attempts were generated against dummy AD-LAB users.
 
-Each scenario follows:
+The objective was to detect a suspicious cluster of authentication failures without locking accounts.
 
-```text
-Controlled Action
-        ↓
-Raw Windows / Sysmon Telemetry
-        ↓
-Wazuh Ingestion
-        ↓
-Detection Rule
-        ↓
-Alert
-        ↓
-Analyst Investigation
-        ↓
-False-Positive Analysis
-        ↓
-Tuning
-        ↓
-Mitigation / Hardening
-```
-
-For each detection, the project aims to record:
-
-- Expected telemetry
-- Observed telemetry
-- Rule logic
-- MITRE ATT&CK mapping
-- Alert result
-- Approximate latency
-- False-positive considerations
-- Tuning decisions
-- Evidence
-- Final validation status
-
-Possible statuses:
+Relevant telemetry included:
 
 ```text
-Detected
-Partially Detected
-Logged but Not Alerted
-Not Observed
+4625
+4771
+4776
 ```
 
-A missing alert is treated as a **detection-engineering gap to investigate**, not something to hide.
+### Result
 
-The PowerShell 4104 investigation is an example of this process: the event was traced from GPO configuration, through local Windows logging, Wazuh agent collection, raw archive inspection, decoded field analysis, and finally to a working custom rule.
+**✅ Detected**
 
----
-
-# MITRE ATT&CK Coverage So Far
-
-| Technique | ID | Lab Validation |
-|---|---|---|
-| Kerberoasting | `T1558.003` | Custom rule 110100 |
-| Password Spraying | `T1110.003` | Custom rule 110110 |
-| PowerShell | `T1059.001` | Custom rule 110120 + built-in 92057 |
-
-Additional ATT&CK mappings will be added only when supported by actual controlled lab behavior.
-
----
-
-# Planned Next Phases
-
-## Benign Noise Automation
-
-Planned files:
+Custom Wazuh detection:
 
 ```text
-automation/benign-noise.ps1
-automation/scheduled-task-setup.ps1
+Rule 110110
 ```
 
-Potential normal background activity:
-
-- DNS queries
-- ICMP connectivity checks
-- SYSVOL reads
-- NETLOGON reads
-- Low-rate internal requests
-
-Goals:
-
-- Measure false positives
-- Evaluate alert quality
-- Tune thresholds
-- Demonstrate detections operating in a noisy environment
+The detection demonstrates how frequency, source system, and affected accounts can distinguish a suspicious pattern from an isolated user mistake.
 
 ---
 
-## Additional Detection Scenarios
+# Test 03 — Kerberoasting
 
-Planned work includes:
+A deliberately configured service account was created:
 
-1. Active Directory / network reconnaissance
-2. Remote logon / lateral-movement-like activity
-3. Privileged group membership modification
-4. Canary-account authentication attempts
-5. Targeted directory-object auditing
-6. Additional hardening / before-and-after validation
+```text
+svc_web
+```
+
+An SPN was assigned:
+
+```text
+HTTP/web.adlab.test
+```
+
+A controlled Kerberos service-ticket request generated Event ID:
+
+```text
+4769
+```
+
+### Result
+
+**✅ Detected**
+
+Custom Wazuh detection:
+
+```text
+Rule 110100
+```
+
+The investigation considered:
+
+* Requesting account
+* Service name
+* Source host
+* Ticket encryption information
+* SPN
+* Timestamp
+
+Normal 4769 events were also observed, demonstrating why additional context is necessary before treating every service-ticket request as malicious.
+
+After testing, the deliberately weak `svc_web` password was replaced with a strong lab-only password.
 
 ---
 
-# Planned Sigma Rules
+# Test 04 — Suspicious PowerShell Reconnaissance
+
+Controlled PowerShell Active Directory enumeration was performed.
+
+Examples included:
+
+```powershell
+Get-ADDomain
+Get-ADUser -Filter *
+Get-ADGroup -Filter *
+Get-ADGroupMember "Domain Admins"
+```
+
+PowerShell Script Block Logging and endpoint telemetry provided visibility into the commands.
+
+### Result
+
+**✅ Detected**
+
+Custom Wazuh detection:
+
+```text
+Rule 110120
+```
+
+PowerShell itself is not considered malicious.
+
+Detection confidence depends on context such as:
+
+* User
+* Host
+* Command content
+* Frequency
+* Breadth of enumeration
+* Surrounding activity
+
+---
+
+# Test 05 — Controlled Remote Logon
+
+PowerShell Remoting over WinRM was used from:
+
+```text
+WIN11-CLIENT
+10.10.10.20
+```
+
+to:
+
+```text
+DC01
+10.10.10.10
+```
+
+DC01 generated:
+
+```text
+Event ID: 4624
+Logon Type: 3
+Account: Administrator
+Source IP: 10.10.10.20
+Authentication: Kerberos
+```
+
+### Result
+
+**🟡 Logged but not alerted**
+
+The correct raw Windows event was successfully observed.
+
+However, the exact DC01 Type-3 remote administrative logon could not be confirmed as a corresponding Wazuh alert.
+
+This was documented as a detection-engineering gap rather than claiming an alert that was not observed.
+
+See:
+
+```text
+reports/test-05-lateral-movement.md
+```
+
+---
+
+# Test 06 — Privileged Group Membership Change
+
+The `helpdesk.test` account was temporarily added to:
+
+```text
+Domain Admins
+```
+
+Windows generated:
+
+```text
+Event ID 4728
+```
+
+Wazuh generated:
+
+```text
+Rule ID: 60159
+Rule Description: Domain Admins Group Changed
+Level: 12
+```
+
+### Result
+
+**✅ Detected**
+
+After evidence collection, `helpdesk.test` was immediately removed from Domain Admins.
+
+Final hardening verification confirmed the temporary privileged membership was removed.
+
+---
+
+# Canary Identity Tripwire
+
+A dedicated account was created:
+
+```text
+canary.admin
+```
+
+The identity is:
+
+* Disabled
+* Non-privileged
+* Never used for legitimate administration
+
+A controlled authentication attempt generated:
+
+```text
+Event ID: 4776
+Target Account: canary.admin
+Source Workstation: WIN11-CLIENT
+```
+
+A custom high-severity Wazuh detection was created:
+
+```text
+Rule ID: 110150
+Level: 12
+```
+
+### Result
+
+**✅ Detected**
+
+Because no legitimate workflow should authenticate as this account, the detection has an extremely low expected false-positive rate.
+
+The rule was also successfully revalidated after hardening.
+
+---
+
+# Targeted Active Directory Auditing
+
+Advanced Directory Service Access auditing was configured.
+
+A SACL was applied to the dedicated:
+
+```text
+Test-Lab OU
+```
+
+A harmless object operation successfully generated:
+
+```text
+Event ID 4662
+```
+
+### Key Finding
+
+Enabling Directory Service Access auditing alone was not sufficient.
+
+Event 4662 required:
+
+```text
+Audit Policy + Object SACL
+```
+
+This demonstrated the relationship between Windows audit policy and object-level Active Directory auditing.
+
+---
+
+# LDAP Diagnostic Visibility
+
+Temporary LDAP Field Engineering diagnostics were enabled on DC01.
+
+A controlled LDAP query generated:
+
+```text
+Event ID 1644
+```
+
+The event was successfully confirmed locally in the Directory Service event log.
+
+However, it was not successfully confirmed in Wazuh.
+
+### Result
+
+**🟡 Local telemetry validated / Wazuh ingestion gap**
+
+Verbose diagnostic logging was disabled immediately after validation.
+
+This gap is intentionally documented rather than hidden.
+
+---
+
+# Custom Wazuh Detections
+
+Detection engineering was performed using actual decoded lab telemetry.
+
+| Rule ID | Detection                                 | Status      |
+| ------- | ----------------------------------------- | ----------- |
+| 110100  | Kerberoasting                             | ✅ Validated |
+| 110110  | Password spraying / failed authentication | ✅ Validated |
+| 110120  | PowerShell AD reconnaissance              | ✅ Validated |
+| 110130  | Network service discovery / Nmap          | ✅ Validated |
+| 110150  | Canary-account authentication             | ✅ Validated |
+
+Rules are stored under:
+
+```text
+detections/wazuh/
+```
+
+The lab also verified availability of:
+
+```bash
+/var/ossec/bin/wazuh-logtest
+```
+
+for Wazuh rule-testing workflows.
+
+---
+
+# Sigma Detection-as-Code
+
+Vendor-neutral Sigma rules were created under:
 
 ```text
 detections/sigma/
-├── kerberoasting.yml
-├── password-spray.yml
-├── suspicious-powershell.yml
-├── privileged-group-change.yml
-└── canary-account.yml
 ```
 
-Sigma rules will only be marked validated after comparison with the actual working Wazuh detection behavior.
+Implemented detections include:
+
+```text
+kerberoasting.yml
+powershell-ad-recon.yml
+privileged-group-change.yml
+```
+
+Sigma is used as the portable detection specification.
+
+Wazuh XML rules are used as the operational SIEM implementation.
+
+The project does **not** claim that storing Sigma YAML files automatically makes Wazuh execute them.
 
 ---
 
-# Final Goal
+# Threat Hunting Views
 
-The completed project is designed to demonstrate practical experience with:
+Repeatable Wazuh hunting workflows were documented under:
 
-- Active Directory administration
-- Windows authentication
-- Kerberos
-- DNS
-- Group Policy
-- Windows Security Event Logs
-- PowerShell telemetry
-- Sysmon
-- Wazuh SIEM
-- Detection engineering
-- Correlation rules
-- Threat hunting
-- MITRE ATT&CK
-- Alert validation
-- False-positive tuning
-- Troubleshooting
-- Identity hardening
-- Sigma
-- Security documentation
-- Git-based detection-as-code
+```text
+dashboards/wazuh-saved-searches.md
+```
+
+Views include:
+
+### Authentication
+
+```text
+4624
+4625
+4771
+4776
+```
+
+### Kerberos
+
+```text
+4769
+```
+
+### PowerShell
+
+```text
+4104
+```
+
+### Privileged Group Changes
+
+```text
+4728
+4732
+4756
+```
+
+### Active Directory Objects
+
+```text
+4662
+5136
+```
+
+### Canary Authentication
+
+```text
+rule.id:110150
+```
+
+### Network Reconnaissance
+
+```text
+rule.id:110130
+```
+
+These searches provide a repeatable analyst workflow instead of relying only on isolated screenshots.
 
 ---
 
-## Current Milestone
+# Benign Enterprise Noise
+
+A PowerShell automation script generated low-rate normal activity from WIN11-CLIENT.
+
+The activity included:
+
+* DNS resolution
+* ICMP reachability
+* SYSVOL reads
+* NETLOGON reads
+* Normal PowerShell execution
+
+Source:
 
 ```text
-DC01          ✅ AD DS + DNS + Auditing + PowerShell + Sysmon + Wazuh Agent
-WIN11-CLIENT  ✅ Domain Joined + Workstation GPO + PowerShell + Sysmon + Wazuh Agent
-WAZUH         ✅ Manager + Indexer + Dashboard + Centralized Telemetry
-KALI          ⏳ Pending
-```
-
-### Validated detections
-
-```text
-110100  ✅ Kerberoasting
-110110  ✅ Password Spraying
-110120  ✅ Suspicious PowerShell Script Block
-92057   ✅ Encoded PowerShell (built-in)
-60122   ✅ Failed Logon (built-in)
-60104   ✅ Windows Audit Failure (built-in)
-```
-
-**Day 3 is complete. The next milestone is controlled attack simulation, additional identity detections, background-noise testing, Sigma conversion, and hardening validation.**
-Day 4 — Benign Enterprise Noise Automation
-
-Day 4 introduced automated benign background activity into the Active Directory lab.
-
-The purpose of this phase is to make later detection testing more realistic.
-
-Instead of testing detections in a completely quiet environment, WIN11-CLIENT now generates low-rate normal enterprise-style activity in the background.
-
-This provides a baseline that can later be compared against controlled attack activity.
-
-The workflow for this phase was:
-
-Create Benign Activity Script
-        ↓
-Run Manually
-        ↓
-Validate Activity
-        ↓
-Create Scheduled Task
-        ↓
-Run Automatically
-        ↓
-Validate Successful Execution
-        ↓
-Use as Background Traffic During Detection Testing
-
-Benign Noise Generator
-
-A PowerShell script was created:
-
 automation/benign-noise.ps1
+```
 
-The script is deployed on WIN11-CLIENT as:
+The objective was to evaluate detection quality while normal background activity was present.
 
-C:\ADLab\benign-noise.ps1
+## False-Positive Validation
 
-The script generates several types of normal domain activity.
+Two detections were explicitly tested while benign noise was active:
 
-DNS Activity
+| Detection                           | Suspicious Activity Detected | Benign False Positive Observed |
+| ----------------------------------- | ---------------------------- | ------------------------------ |
+| Network reconnaissance / Nmap       | ✅                            | No                             |
+| Canary authentication / Rule 110150 | ✅                            | No                             |
 
-The workstation resolves:
+This provides stronger validation than testing detections against an otherwise silent environment.
 
-dc01.adlab.test
+See:
 
-using:
+```text
+reports/noise-baseline.md
+```
 
-Resolve-DnsName "dc01.adlab.test"
+---
 
-This produces normal DNS traffic and Sysmon DNS telemetry.
+# Detection Validation
 
-ICMP Connectivity
+The complete validation matrix is available at:
 
-The workstation performs a basic connectivity test to the Domain Controller:
+```text
+reports/detection-validation-matrix.md
+```
 
-Test-Connection "dc01.adlab.test" -Count 1
+Summary:
 
-This simulates ordinary network connectivity checks.
+| Detection                   | Expected Telemetry | Result                    |
+| --------------------------- | ------------------ | ------------------------- |
+| Network reconnaissance      | Network / Sysmon   | ✅ Detected                |
+| Password spraying           | 4625 / 4771 / 4776 | ✅ Detected                |
+| Kerberoasting               | 4769               | ✅ Detected                |
+| PowerShell reconnaissance   | 4104 / Sysmon      | ✅ Detected                |
+| Remote administrative logon | 4624 Type 3        | 🟡 Logged but not alerted |
+| Privileged-group change     | 4728               | ✅ Detected                |
+| Canary authentication       | 4776               | ✅ Detected                |
+| AD object access            | 4662               | ✅ Telemetry validated     |
+| LDAP diagnostics            | 1644               | 🟡 Wazuh ingestion gap    |
 
-SYSVOL Access
+---
 
-The script performs a directory read against:
+# Hardening
 
-\\dc01.adlab.test\SYSVOL\adlab.test
+The environment was hardened after testing.
 
-SYSVOL is normally accessed by domain-joined Windows systems for Group Policy and other domain resources.
+## Service Account
 
-This introduces legitimate SMB activity into the lab.
+Before:
 
-NETLOGON Access
+```text
+svc_web
+Deliberately weak lab password
+SPN configured
+```
 
-The script also reads:
+After:
 
-\\dc01.adlab.test\NETLOGON
+* Password replaced with a strong unique lab password
+* Account remained non-administrative
+* Membership verified as `Domain Users`
 
-This produces another form of legitimate domain SMB activity that can exist alongside later authentication and lateral-movement tests.
+## Privileged Membership
 
-Normal PowerShell Activity
+`helpdesk.test` was removed from:
 
-The script records information about the current workstation session:
+```text
+Domain Admins
+```
 
-Domain
-Username
-Computer name
+Final membership verification confirmed that the temporary privilege was removed.
 
-This creates normal PowerShell execution that can later be compared against suspicious PowerShell activity.
+## Canary Account
 
-Benign Noise Logging
+```text
+canary.admin
+Enabled: False
+```
 
-The script writes its own execution log to:
+The canary identity remains disabled and non-privileged.
 
-%LOCALAPPDATA%\ADLab\benign-noise.log
+## LDAP Diagnostics
 
-The log provides a simple record of what normal activity was generated.
+Temporary:
 
-A successful manual cycle produced:
+```text
+15 Field Engineering = 5
+```
 
-DNS lookup dc01.adlab.test | SUCCESS
-Ping DC01 | True
-SYSVOL read | SUCCESS
-NETLOGON read | SUCCESS
-PowerShell workstation activity | ADLAB\Administrator on WIN11-CLIENT
-Benign noise cycle | COMPLETE
+Final:
 
-This confirmed that all intended background actions executed correctly.
+```text
+15 Field Engineering = 0
+```
 
-Scheduled Task Automation
+The temporary LDAP search threshold was also removed.
 
-A second script was created:
+## Monitoring
 
-automation/scheduled-task-setup.ps1
+After hardening:
 
-Its purpose is to automatically register the benign activity generator as a Windows Scheduled Task.
+```text
+Sysmon DC01          Running
+Sysmon WIN11-CLIENT  Running
+Wazuh DC01           Running
+Wazuh WIN11-CLIENT   Running
+```
 
-The scheduled task is named:
+---
 
-ADLAB-Benign-Enterprise-Noise
+# Post-Hardening Retest
 
-The task executes:
+After hardening, the canary-account detection was tested again.
 
-C:\ADLab\benign-noise.ps1
+Custom rule:
 
-using:
+```text
+110150
+```
 
-powershell.exe
--NoProfile
--ExecutionPolicy Bypass
+successfully fired.
 
-The execution-policy bypass applies only to the PowerShell process started by the task and does not permanently modify the system-wide PowerShell execution policy.
+### Result
 
-Scheduled Task Frequency
+**✅ Detection pipeline remained operational after hardening**
 
-The task was configured to run:
+This demonstrated that the security weaknesses introduced for testing could be removed without disabling monitoring.
 
-Every 30 minutes
+---
 
-This interval was intentionally kept low.
+# Before vs After
 
-The goal is not to flood Wazuh with unnecessary events.
+| Control            | Test State               | Hardened State           |
+| ------------------ | ------------------------ | ------------------------ |
+| svc_web password   | Weak lab-only password   | Strong unique password   |
+| svc_web privilege  | Standard SPN account     | Least privilege retained |
+| helpdesk.test      | Temporarily Domain Admin | Removed                  |
+| canary.admin       | Disabled                 | Remains disabled         |
+| LDAP diagnostics   | Temporarily verbose      | Disabled                 |
+| Windows auditing   | Enabled                  | Retained                 |
+| PowerShell logging | Enabled                  | Retained                 |
+| Sysmon             | Active                   | Retained                 |
+| Wazuh              | Active                   | Retained                 |
+| Benign noise       | Active for validation    | Stopped after testing    |
 
-Instead, the automation creates a small but continuous amount of predictable legitimate activity while detection testing is performed.
+---
 
-Scheduled Task Validation
+# Key Findings
 
-The scheduled task was verified using:
+## Raw telemetry is not the same as an alert
 
-Get-ScheduledTask -TaskName "ADLAB-Benign-Enterprise-Noise" |
-Select-Object TaskName,State
+The remote WinRM test generated the expected Windows Event 4624 Logon Type 3 but did not produce a confirmed corresponding Wazuh alert.
 
-The task successfully returned:
+## Detection context matters
 
-TaskName: ADLAB-Benign-Enterprise-Noise
-State: Ready
+Event 4769 occurs frequently during normal Active Directory operation.
 
-Evidence
+Kerberos detections therefore require contextual fields rather than simply alerting on every service-ticket request.
 
+## Canary identities provide high-signal detection
 
+Because `canary.admin` is disabled and never legitimately used, authentication attempts provide strong detection confidence.
 
-Automated Execution Validation
+## AD auditing requires object-level configuration
 
-The task was then allowed to execute automatically.
+Event 4662 required both the correct audit policy and a SACL on the monitored Active Directory object.
 
-Its execution status was checked using:
+## Telemetry gaps should be documented
 
-Get-ScheduledTaskInfo -TaskName "ADLAB-Benign-Enterprise-Noise" |
-Select-Object LastRunTime,NextRunTime,LastTaskResult
+LDAP Event 1644 was generated locally but was not successfully confirmed in Wazuh.
 
-The first automated run returned:
+The gap is documented rather than hidden.
 
-LastTaskResult: 0
+## False-positive validation matters
 
-A result of 0 confirmed successful task execution.
+Testing while benign enterprise-like traffic was active demonstrated whether rules remained useful under more realistic conditions.
 
-The next execution was automatically scheduled 30 minutes later.
+---
 
-Automated Noise Log
+# Evidence
 
-The local activity log was checked again after the scheduled execution.
+Example evidence captured during the project includes:
 
-The second cycle showed:
+```text
+screenshots/day3-sysmon-dc01-event1.png
+screenshots/day3-powershell-4104-event.png
+screenshots/test-01-recon.png
+screenshots/test-02-password-failures.png
+screenshots/test-03-kerberoasting.png
+screenshots/test-04-powershell.png
+screenshots/test-05-remote-logon-4624.png
+screenshots/test-06-group-change-4728.png
+screenshots/test-06-domain-admins-wazuh-rule-60159.png
+screenshots/advanced-canary-account-4776.png
+screenshots/advanced-canary-custom-rule-110150.png
+screenshots/day3-ldap-1644.png
+screenshots/day3-wazuh-hunting-kerberos.png
+screenshots/day3-wazuh-hunting-powershell.png
+screenshots/day7-hardening-account-state.png
+screenshots/day7-retest-canary-detection.png
+screenshots/day7-canary-noise-validation.png
+```
 
-DNS lookup dc01.adlab.test | SUCCESS
-Ping DC01 | True
-SYSVOL read | SUCCESS
-NETLOGON read | SUCCESS
-PowerShell workstation activity | ADLAB\Administrator on WIN11-CLIENT
-Benign noise cycle | COMPLETE
+---
 
-This confirmed that the scheduled task successfully generated all expected background activity without manual interaction.
+# Limitations
 
-Evidence
+This project intentionally has several limitations:
 
+* Local VirtualBox environment
+* Single domain controller
+* Small number of users and endpoints
+* No enterprise EDR
+* No SOAR platform
+* No production identity-governance platform
+* Simplified network architecture
+* No destructive attacks
+* No credential dumping
+* No DCSync
+* No Golden/Silver Ticket testing
+* LDAP 1644 Wazuh ingestion was not successfully confirmed
+* Remote Type-3 logon was logged but no exact Wazuh alert was confirmed
 
+These limitations are documented intentionally to avoid overstating the project.
 
-Why Background Noise Matters
+---
 
-Detection testing in a completely quiet lab can produce misleading results.
+# Future Improvements
 
-In a quiet environment, almost every security-relevant event appears unusual.
+Potential extensions include:
 
-Real enterprise environments contain continuous legitimate activity such as:
+* Add a second domain controller
+* Add Windows Event Forwarding
+* Add CI validation for Wazuh and Sigma rules
+* Add an internal file server
+* Implement a Group Managed Service Account
+* Compare gMSA monitoring with traditional service accounts
+* Add an EDR platform
+* Add Microsoft Defender for Identity
+* Translate Sigma rules to another SIEM
+* Improve Directory Service Event 1644 ingestion
+* Create a dedicated privileged Type-3 remote-logon detection
+* Expand benign-noise profiles
+* Add regression testing for detection changes
 
-DNS queries
-SMB access
-PowerShell usage
-Domain authentication
-SYSVOL access
-NETLOGON access
-Network connectivity checks
+---
 
-The benign-noise generator introduces some of this activity before later attack simulations are performed.
+# Skills Demonstrated
 
-This allows the project to evaluate whether custom detections remain useful when legitimate activity is present.
+This project demonstrates practical experience with:
 
-Detection Engineering Benefits
+* Active Directory administration
+* Windows security auditing
+* Kerberos authentication
+* Windows Event Logs
+* Sysmon
+* PowerShell logging
+* Wazuh SIEM
+* Detection engineering
+* Custom SIEM rules
+* Sigma
+* Threat hunting
+* MITRE ATT&CK
+* Authentication investigation
+* Active Directory auditing
+* False-positive analysis
+* Detection tuning
+* Security hardening
+* Incident-analysis workflows
+* Git / GitHub documentation
 
-The background activity will later be used to evaluate:
+---
 
-False positives
+# Portfolio Summary
 
-Detection specificity
+This project demonstrates more than the ability to execute security tests.
 
-Alert quality
+It shows the ability to:
 
-Correlation thresholds
+1. Build an Active Directory environment.
+2. Generate controlled security activity.
+3. Collect endpoint and identity telemetry.
+4. Investigate raw events.
+5. Engineer detections.
+6. Validate SIEM alerts.
+7. Identify telemetry gaps.
+8. Evaluate false positives.
+9. Apply hardening.
+10. Retest monitoring after remediation.
+11. Document findings clearly and honestly.
 
-Rule sensitivity
+The final project represents an end-to-end **Active Directory Detection Engineering Lab** rather than a basic attack-simulation exercise.
 
-Normal vs suspicious behavior
+---
 
-Detection performance under background activity
+## Disclaimer
 
-For example, later password-spray, Kerberos, PowerShell, remote-logon, and privilege-change tests can be executed while the benign activity generator continues to run.
+This repository is for educational and authorized cybersecurity laboratory use only.
 
-This provides stronger evidence that the detection rules are identifying the intended behavior rather than simply alerting because the environment is otherwise silent.
-
-Day 4 Files
-
-The following files were added during this phase:
-
-automation/
-├── benign-noise.ps1
-└── scheduled-task-setup.ps1
-
-Evidence:
-
-screenshots/
-├── day4-benign-noise-scheduled-task.png
-└── day4-benign-noise-automated-run.png
-
-Day 4 Result
-
-The benign enterprise noise generator is now:
-
-Created                 ✅
-Manually Tested         ✅
-Logged                  ✅
-Scheduled               ✅
-Automatically Run       ✅
-Validated               ✅
-
-Current behavior:
-
-WIN11-CLIENT
-      │
-      ├── DNS lookup
-      ├── Ping DC01
-      ├── SYSVOL read
-      ├── NETLOGON read
-      └── Normal PowerShell activity
-              │
-              ↓
-      Repeats every 30 minutes
-
-The lab now contains continuous legitimate background activity that can remain active while later attack and detection scenarios are performed.
-
-Day 4 Milestone
-
-Benign Noise Script            ✅ Complete
-Manual Validation              ✅ Complete
-Scheduled Task                 ✅ Complete
-Automated Execution            ✅ Complete
-30-Minute Recurrence           ✅ Active
-Background Detection Baseline  ✅ Established
-
-Next milestone: begin controlled reconnaissance and identity-security testing while benign background traffic remains active.
-
-Project Status Table Update
-
-Update the project-status table near the top of the main README.md to include:
-
-| Day 4 — Benign Noise Automation | ✅ Complete |
-
-
-Day 4 — Kali Reconnaissance & Network Service Discovery Detection
-
-After establishing a benign background-traffic baseline, the next phase introduced a dedicated Kali Linux system for controlled reconnaissance against the Active Directory environment.
-
-The purpose of this phase was to validate whether network reconnaissance against the Domain Controller could be:
-
-Observed locally through Sysmon.
-
-Forwarded into Wazuh.
-
-Distinguished from normal background traffic.
-
-Converted into a dedicated correlation-based detection.
-
-Kali Lab Configuration
-
-An existing Kali Linux virtual machine was reused for the project.
-
-The VirtualBox adapter was attached only to:
-
-Internal Network: AD-LAB
-
-The final Kali network configuration was:
-
-Hostname: KALI
-IP Address: 10.10.10.50
-Subnet: 10.10.10.0/24
-DNS Server: 10.10.10.10
-Default Gateway: None
-
-This keeps the controlled testing workstation inside the isolated Active Directory lab.
-
-The resulting architecture is:
-
-AD-LAB — 10.10.10.0/24
-
-DC01           10.10.10.10
-WIN11-CLIENT   10.10.10.20
-WAZUH          10.10.10.30
-KALI           10.10.10.50
-
-Kali Connectivity Validation
-
-The Kali interface was configured with:
-
-eth0 → 10.10.10.50/24
-
-Connectivity to the Domain Controller was tested using:
-
-ping -c 4 10.10.10.10
-
-The test completed with:
-
-0% packet loss
-
-confirming that Kali could communicate with DC01 through the isolated AD-LAB network.
-
-Evidence
-
-
-
-Kali DNS and Routing Validation
-
-DNS resolution was tested using:
-
-getent hosts dc01.adlab.test
-
-The expected result was:
-
-10.10.10.10    dc01.adlab.test
-
-Routing was also inspected using:
-
-ip route
-
-Kali contained the local:
-
-10.10.10.0/24
-
-route without an unnecessary default Internet route.
-
-This confirms the attack workstation is restricted to the controlled lab environment.
-
-Evidence
-
-
-
-Controlled Active Directory Service Reconnaissance
-
-A targeted Nmap TCP connection scan was performed against DC01.
-
-The scan intentionally targeted only common Active Directory and Windows infrastructure ports rather than scanning the entire network.
-
-nmap -Pn -sT -p 53,88,135,139,389,445,464,636,3268,3269 10.10.10.10
-
-The following services were discovered:
-
-53/tcp    open  domain
-88/tcp    open  kerberos-sec
-135/tcp   open  msrpc
-139/tcp   open  netbios-ssn
-389/tcp   open  ldap
-445/tcp   open  microsoft-ds
-464/tcp   open  kpasswd5
-636/tcp   open  ldapssl
-3268/tcp  open  globalcatLDAP
-3269/tcp  open  globalcatLDAPssl
-
-These services are consistent with the Domain Controller role.
-
-Evidence
-
-
-
-Sysmon Reconnaissance Telemetry
-
-DC01 Sysmon telemetry was inspected immediately after the Nmap scan.
-
-The scan generated multiple:
-
-Sysmon Event ID 3 — Network Connection
-
-events.
-
-The source IP was:
-
-10.10.10.50
-
-which directly identified the Kali workstation.
-
-An initial Sysmon event showed traffic between Kali and DC01 and demonstrated that the reconnaissance was visible at the endpoint.
-
-Evidence
-
-
-
-Wazuh Ingestion Validation
-
-The same Sysmon Event ID 3 telemetry was successfully forwarded into Wazuh.
-
-The dashboard was filtered using:
-
-agent.id: 001
-data.win.system.eventID: 3
-
-and later narrowed specifically to:
-
-10.10.10.50
-
-This proved that Kali-generated network activity could be traced through:
-
-Kali
-  ↓
-DC01
-  ↓
-Sysmon Event ID 3
-  ↓
-Wazuh Agent
-  ↓
-Wazuh Manager
-  ↓
-Dashboard
-
-Evidence
-
-
-
-
-
-Built-In Wazuh Rule Quality Finding
-
-During reconnaissance validation, Wazuh built-in rule:
-
-92105
-
-generated alerts with the description:
-
-Possible suspicious access to Windows admin shares
-
-However, one of the events associated with the Kali scan showed:
-
-Source IP:        10.10.10.50
-Destination IP:   10.10.10.10
-Destination Port: 135
-Process:           C:\Windows\System32\svchost.exe
-Initiated:         false
-
-Port 135/TCP is associated with the Windows RPC Endpoint Mapper and is not itself an SMB administrative-share connection.
-
-This showed that the built-in alert provided visibility, but its description did not accurately represent the complete reconnaissance behavior.
-
-Rather than treating rule 92105 as a reliable port-scan detection, it was documented as a detection-quality / semantic-tuning finding.
-
-This demonstrates an important detection-engineering principle:
-
-An alert firing does not automatically mean
-the alert correctly describes the observed activity.
-
-Multi-Port Reconnaissance Analysis
-
-Sysmon Event ID 3 telemetry was extracted from DC01 and filtered for:
-
-Source IP: 10.10.10.50
-
-The resulting events showed that Kali contacted ten different destination ports within the same second:
-
-53
-88
-135
-139
-389
-445
-464
-636
-3268
-3269
-
-Example observations included:
-
-10.10.10.50 → 10.10.10.10:636
-10.10.10.50 → 10.10.10.10:3269
-10.10.10.50 → 10.10.10.10:88
-10.10.10.50 → 10.10.10.10:389
-10.10.10.50 → 10.10.10.10:464
-10.10.10.50 → 10.10.10.10:3268
-10.10.10.50 → 10.10.10.10:139
-10.10.10.50 → 10.10.10.10:135
-10.10.10.50 → 10.10.10.10:445
-10.10.10.50 → 10.10.10.10:53
-
-This provided a much stronger behavioral signal than any individual connection.
-
-Evidence
-
-
-
-Detection 4 — Network Service Discovery
-
-A custom Wazuh correlation detection was developed to identify rapid multi-port network reconnaissance.
-
-MITRE ATT&CK mapping:
-
-T1046 — Network Service Discovery
-
-The detection uses Sysmon Event ID 3 network telemetry.
-
-Helper Rule 110129
-
-Because the built-in Sysmon Event ID 3 rule is not suitable directly for the required correlation behavior, a custom helper rule was created.
-
-Rule ID: 110129
-Purpose: Track inbound Sysmon Event ID 3 connections
-
-The rule selects:
-
-Sysmon Event ID 3
-+
-Initiated = false
-
-and marks the events as candidates for network-scan correlation.
-
-The helper rule uses:
-
-no_log
-
-so individual candidate events do not unnecessarily clutter the alert stream.
-
-Correlation Rule 110130
-
-The final reconnaissance rule is:
-
-Rule ID: 110130
-Level: 10
-MITRE: T1046
-
-Detection logic:
-
-Inbound Sysmon Event ID 3
-        +
-Same source IP
-        +
-Same destination IP
-        +
-Different destination ports
-        +
-5 events within 10 seconds
-        ↓
-Possible Network Service Discovery
-
-This allows the detection to recognize scanning behavior rather than alerting on every individual connection.
-
-The final rule is maintained in:
-
-detections/wazuh/local_rules.xml
-
-Detection Validation
-
-The original targeted Nmap scan was executed again from Kali:
-
-nmap -Pn -sT -p 53,88,135,139,389,445,464,636,3268,3269 10.10.10.10
-
-The custom Wazuh rule successfully fired.
-
-Observed alert data included:
-
-Rule ID:         110130
-Source IP:       10.10.10.50
-Destination IP:  10.10.10.10
-MITRE Technique: T1046
-
-This confirmed the complete detection path:
-
-Kali Nmap Scan
-        ↓
-10 Different AD / Windows Ports
-        ↓
-DC01 Sysmon Event ID 3
-        ↓
-Wazuh Ingestion
-        ↓
-Rule 110129 Helper Correlation
-        ↓
-Rule 110130
-        ↓
-T1046 — Network Service Discovery
-        ↓
-Dashboard Alert
-
-Evidence
-
-
-
-False-Positive Validation
-
-The new reconnaissance detection was tested while the Day 4 benign-noise automation continued running on:
-
-WIN11-CLIENT — 10.10.10.20
-
-The benign generator continuously produces:
-
-DNS resolution
-ICMP connectivity checks
-SYSVOL reads
-NETLOGON reads
-Normal PowerShell activity
-
-All alerts generated by rule 110130 were grouped by source and destination IP.
-
-Observed result:
-
-1  10.10.10.50 → 10.10.10.10
-
-No 110130 alerts were observed from:
-
-10.10.10.20
-
-during this validation period.
-
-This means the rule successfully detected the controlled Kali scan while remaining quiet during the automated benign workstation traffic.
-
-The current validation result is therefore:
-
-Attack Detection:     ✅ Successful
-Benign Noise Alert:   ❌ None observed
-False Positive Check: ✅ Passed during test window
-
-If captured:
-
-
-
-Detection Engineering Result
-
-Detection:      Network Service Discovery
-Rule:           110130
-Helper Rule:    110129
-Telemetry:      Sysmon Event ID 3
-Source:         10.10.10.50 — Kali
-Target:         10.10.10.10 — DC01
-Threshold:      5 events
-Timeframe:      10 seconds
-Correlation:    Same source + same destination + different ports
-MITRE ATT&CK:   T1046
-Alert Result:   ✅ Detected
-Benign FP Test: ✅ No false positive observed
-
-Day 4 Reconnaissance Milestone
-
-Kali AD-LAB Networking              ✅ Complete
-Kali → DC01 Connectivity            ✅ Complete
-DNS Resolution                      ✅ Complete
-Isolated Routing                    ✅ Complete
-Targeted AD Service Recon           ✅ Complete
-Sysmon Event 3 Visibility           ✅ Complete
-Wazuh Event Ingestion               ✅ Complete
-Built-In Alert Quality Analysis     ✅ Complete
-Custom Correlation Rule 110129      ✅ Complete
-Network Scan Rule 110130            ✅ Complete
-MITRE T1046 Mapping                 ✅ Complete
-Live Dashboard Detection            ✅ Complete
-Benign Noise False-Positive Check   ✅ Passed
-
-Network Service Discovery detection is now validated end-to-end.
+All testing was performed against systems owned and intentionally configured for this private lab.

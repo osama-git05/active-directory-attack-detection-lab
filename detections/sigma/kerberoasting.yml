@@ -1,0 +1,26 @@
+title: ADLAB Suspicious Kerberos Service Ticket Request
+id: 872cd075-73bb-42e4-9e84-a2fa5ea05f42
+status: experimental
+description: Detects a Kerberos service ticket request using RC4 encryption for a non-machine account in the AD-LAB environment.
+logsource:
+  product: windows
+  service: security
+
+detection:
+  selection:
+    EventID: 4769
+    TicketEncryptionType: '0x17'
+
+  filter_machine_accounts:
+    TargetUserName|endswith: '$'
+
+  condition: selection and not filter_machine_accounts
+
+falsepositives:
+  - Legacy applications or service accounts that legitimately use RC4 Kerberos tickets
+
+level: high
+
+tags:
+  - attack.credential-access
+  - attack.t1558.003

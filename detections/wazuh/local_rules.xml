@@ -105,3 +105,17 @@
   </rule>
 
 </group>
+
+<group name="windows,authentication,adlab,canary,">
+
+  <rule id="110150" level="12">
+    <if_sid>60104</if_sid>
+    <field name="win.system.eventID">^4776$</field>
+    <field name="win.eventdata.targetUserName" type="pcre2">(?i)^canary\.admin$</field>
+    <description>ADLAB: Authentication attempt against canary account $(win.eventdata.targetUserName) from $(win.eventdata.workstation)</description>
+    <mitre>
+      <id>T1078</id>
+    </mitre>
+  </rule>
+
+</group>
