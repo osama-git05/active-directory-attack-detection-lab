@@ -779,7 +779,7 @@ screenshots/day7-canary-noise-validation.png
 
 **Kerberoasting Detection**
 
-<img src="screenshots/test-03-kerberoasting.png" alt="Kerberoasting Detection">
+<img src="screenshots/day3-kerberoasting-event4769-rc4.png" alt="Kerberoasting Detection">
 
 </td>
 </tr>
